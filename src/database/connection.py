@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
+from sqlite3 import Connection
 
 from beartype import beartype
-
-if TYPE_CHECKING:
-    from sqlite3 import Connection
 
 from src.database.models import TRADES_INDEXES, TRADES_TABLE_SCHEMA
 from src.utils.config import DB_PATH

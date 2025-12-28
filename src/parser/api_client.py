@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
 
 from beartype import beartype
 from httpx import Client, HTTPError, Response
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL
 
