@@ -81,3 +81,74 @@ def fetch_trades(
         if should_close:
             api_client.close()
 
+
+@beartype
+def fetch_all_trades(
+    market_id: str,
+    api_client: PolymarketAPIClient | None = None,
+    limit_per_page: int = 500,
+) -> list[tuple[int, float, float, str, str]]:
+    """
+    Fetch ALL trades from Polymarket API using pagination.
+
+    This function automatically handles pagination to fetch all available trades,
+    not just the first page. Useful when you need to download all historical trades
+    for a market (e.g., when hashdive.com shows 500+ pages of trades).
+
+    Args:
+        market_id: Polymarket market ID
+        api_client: Optional API client (creates new if None)
+        limit_per_page: Number of trades to fetch per page (max 500)
+
+    Returns:
+        List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id)
+    """
+    should_close = api_client is None
+    if api_client is None:
+        api_client = PolymarketAPIClient()
+
+    try:
+        all_trades: list[tuple[int, float, float, str, str]] = []
+        cursor: str | None = None
+        page = 1
+
+        while True:
+            # Fetch trades with pagination
+            response = api_client.get_trades(market_id, limit=limit_per_page, cursor=cursor)
+
+            # Extract trades from response
+            trades_data = response.get("data", [])
+            if not isinstance(trades_data, list):
+                trades_data = []
+
+            # Parse all trades from this page
+            parsed_trades: list[tuple[int, float, float, str, str]] = []
+            for trade in trades_data:
+                parsed = parse_trade_data(trade)
+                if parsed:
+                    parsed_trades.append(parsed)
+
+            all_trades.extend(parsed_trades)
+
+            # Check for next page cursor
+            next_cursor = response.get("cursor") or response.get("nextCursor")
+
+            # If no more trades, we're done
+            if not parsed_trades:
+                break
+
+            # If we got fewer trades than requested, this is the last page
+            if len(parsed_trades) < limit_per_page:
+                break
+
+            # If no cursor available, we're done
+            if not next_cursor:
+                break
+
+            cursor = str(next_cursor)
+            page += 1
+
+        return all_trades
+    finally:
+        if should_close:
+            api_client.close()

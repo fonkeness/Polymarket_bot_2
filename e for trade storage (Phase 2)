@@ -1,0 +1,155 @@
+[1mdiff --git a/scripts/stage1_main.py b/scripts/stage1_main.py[m
+[1mdeleted file mode 100644[m
+[1mindex aafbc11..0000000[m
+[1m--- a/scripts/stage1_main.py[m
+[1m+++ /dev/null[m
+[36m@@ -1,70 +0,0 @@[m
+[31m-"""Main entry point for Stage 1 testing."""[m
+[31m-[m
+[31m-from __future__ import annotations[m
+[31m-[m
+[31m-import sys[m
+[31m-from pathlib import Path[m
+[31m-[m
+[31m-from beartype import beartype[m
+[31m-[m
+[31m-# Add src to path[m
+[31m-sys.path.insert(0, str(Path(__file__).parent.parent))[m
+[31m-[m
+[31m-from src.database.connection import initialize_database[m
+[31m-from src.database.repository import get_trade_count, insert_trades_batch[m
+[31m-from src.parser.trade_parser import fetch_trades[m
+[31m-from src.utils.config import INITIAL_TRADE_LIMIT[m
+[31m-[m
+[31m-[m
+[31m-@beartype[m
+[31m-def main(market_id: str) -> None:[m
+[31m-    """[m
+[31m-    Main function to test Stage 1 functionality.[m
+[31m-[m
+[31m-    Args:[m
+[31m-        market_id: Polymarket market ID to fetch trades for[m
+[31m-    """[m
+[31m-    print(f"Stage 1: Database Setup & Initial Parsing")[m
+[31m-    print(f"Market ID: {market_id}")[m
+[31m-    print(f"Trade Limit: {INITIAL_TRADE_LIMIT}")[m
+[31m-    print("-" * 50)[m
+[31m-[m
+[31m-    # Initialize database[m
+[31m-    print("Initializing database...")[m
+[31m-    initialize_database()[m
+[31m-    print("Database initialized successfully.")[m
+[31m-[m
+[31m-    # Fetch trades[m
+[31m-    print(f"\nFetching up to {INITIAL_TRADE_LIMIT} trades from Polymarket API...")[m
+[31m-    try:[m
+[31m-        trades = fetch_trades(market_id, limit=INITIAL_TRADE_LIMIT)[m
+[31m-        print(f"Fetched {len(trades)} trades from API.")[m
+[31m-[m
+[31m-        if not trades:[m
+[31m-            print("No trades found. Exiting.")[m
+[31m-            return[m
+[31m-[m
+[31m-        # Save to database[m
+[31m-        print("\nSaving trades to database...")[m
+[31m-        inserted_count = insert_trades_batch(trades)[m
+[31m-        print(f"Successfully inserted {inserted_count} trades into database.")[m
+[31m-[m
+[31m-        # Verify[m
+[31m-        total_count = get_trade_count(market_id)[m
+[31m-        print(f"\nTotal trades in database for market {market_id}: {total_count}")[m
+[31m-[m
+[31m-        print("\nStage 1 completed successfully!")[m
+[31m-    except Exception as e:[m
+[31m-        print(f"\nError: {e}")[m
+[31m-        sys.exit(1)[m
+[31m-[m
+[31m-[m
+[31m-if __name__ == "__main__":[m
+[31m-    if len(sys.argv) < 2:[m
+[31m-        print("Usage: python scripts/stage1_main.py <market_id>")[m
+[31m-        print("Example: python scripts/stage1_main.py 0x1234...")[m
+[31m-        sys.exit(1)[m
+[31m-[m
+[31m-    market_id = sys.argv[1][m
+[31m-    main(market_id)[m
+[31m-[m
+[1mdiff --git a/src/parser/trade_parser.py b/src/parser/trade_parser.py[m
+[1mindex 6370708..84dd90d 100644[m
+[1m--- a/src/parser/trade_parser.py[m
+[1m+++ b/src/parser/trade_parser.py[m
+[36m@@ -81,3 +81,74 @@[m [mdef fetch_trades([m
+         if should_close:[m
+             api_client.close()[m
+ [m
+[32m+[m
+[32m+[m[32m@beartype[m
+[32m+[m[32mdef fetch_all_trades([m
+[32m+[m[32m    market_id: str,[m
+[32m+[m[32m    api_client: PolymarketAPIClient | None = None,[m
+[32m+[m[32m    limit_per_page: int = 500,[m
+[32m+[m[32m) -> list[tuple[int, float, float, str, str]]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Fetch ALL trades from Polymarket API using pagination.[m
+[32m+[m
+[32m+[m[32m    This function automatically handles pagination to fetch all available trades,[m
+[32m+[m[32m    not just the first page. Useful when you need to download all historical trades[m
+[32m+[m[32m    for a market (e.g., when hashdive.com shows 500+ pages of trades).[m
+[32m+[m
+[32m+[m[32m    Args:[m
+[32m+[m[32m        market_id: Polymarket market ID[m
+[32m+[m[32m        api_client: Optional API client (creates new if None)[m
+[32m+[m[32m        limit_per_page: Number of trades to fetch per page (max 500)[m
+[32m+[m
+[32m+[m[32m    Returns:[m
+[32m+[m[32m        List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id)[m
+[32m+[m[32m    """[m
+[32m+[m[32m    should_close = api_client is None[m
+[32m+[m[32m    if api_client is None:[m
+[32m+[m[32m        api_client = PolymarketAPIClient()[m
+[32m+[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        all_trades: list[tuple[int, float, float, str, str]] = [][m
+[32m+[m[32m        cursor: str | None = None[m
+[32m+[m[32m        page = 1[m
+[32m+[m
+[32m+[m[32m        while True:[m
+[32m+[m[32m            # Fetch trades with pagination[m
+[32m+[m[32m            response = api_client.get_trades(market_id, limit=limit_per_page, cursor=cursor)[m
+[32m+[m
+[32m+[m[32m            # Extract trades from response[m
+[32m+[m[32m            trades_data = response.get("data", [])[m
+[32m+[m[32m            if not isinstance(trades_data, list):[m
+[32m+[m[32m                trades_data = [][m
+[32m+[m
+[32m+[m[32m            # Parse all trades from this page[m
+[32m+[m[32m            parsed_trades: list[tuple[int, float, float, str, str]] = [][m
+[32m+[m[32m            for trade in trades_data:[m
+[32m+[m[32m                parsed = parse_trade_data(trade)[m
+[32m+[m[32m                if parsed:[m
+[32m+[m[32m                    parsed_trades.append(parsed)[m
+[32m+[m
+[32m+[m[32m            all_trades.extend(parsed_trades)[m
+[32m+[m
+[32m+[m[32m            # Check for next page cursor[m
+[32m+[m[32m            next_cursor = response.get("cursor") or response.get("nextCursor")[m
+[32m+[m
+[32m+[m[32m            # If no more trades, we're done[m
+[32m+[m[32m            if not parsed_trades:[m
+[32m+[m[32m                break[m
+[32m+[m
+[32m+[m[32m            # If we got fewer trades than requested, this is the last page[m
+[32m+[m[32m            if len(parsed_trades) < limit_per_page:[m
+[32m+[m[32m                break[m
+[32m+[m
+[32m+[m[32m            # If no cursor available, we're done[m
+[32m+[m[32m            if not next_cursor:[m
+[32m+[m[32m                break[m
+[32m+[m
+[32m+[m[32m            cursor = str(next_cursor)[m
+[32m+[m[32m            page += 1[m
+[32m+[m
+[32m+[m[32m        return all_trades[m
+[32m+[m[32m    finally:[m
+[32m+[m[32m        if should_close:[m
+[32m+[m[32m            api_client.close()[m

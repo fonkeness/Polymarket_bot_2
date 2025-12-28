@@ -1,4 +1,4 @@
-"""Main entry point for Stage 1 testing."""
+"""Main entry point for Stage 2: Database Setup & Initial Parsing."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from src.utils.config import INITIAL_TRADE_LIMIT
 @beartype
 def main(market_id: str) -> None:
     """
-    Main function to test Stage 1 functionality.
+    Main function to test Stage 2 functionality.
 
     Args:
         market_id: Polymarket market ID to fetch trades for
     """
-    print(f"Stage 1: Database Setup & Initial Parsing")
+    print("Stage 2: Database Setup & Initial Parsing")
     print(f"Market ID: {market_id}")
     print(f"Trade Limit: {INITIAL_TRADE_LIMIT}")
     print("-" * 50)
@@ -53,7 +53,7 @@ def main(market_id: str) -> None:
         total_count = get_trade_count(market_id)
         print(f"\nTotal trades in database for market {market_id}: {total_count}")
 
-        print("\nStage 1 completed successfully!")
+        print("\nStage 2 completed successfully!")
     except Exception as e:
         print(f"\nError: {e}")
         sys.exit(1)
@@ -61,8 +61,8 @@ def main(market_id: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python scripts/stage1_main.py <market_id>")
-        print("Example: python scripts/stage1_main.py 0x1234...")
+        print("Usage: python scripts/stage2_main.py <market_id>")
+        print("Example: python scripts/stage2_main.py 0x1234...")
         sys.exit(1)
 
     market_id = sys.argv[1]
