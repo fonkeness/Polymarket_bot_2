@@ -1,0 +1,92 @@
+# Project Development Plan: Polymarket Telegram Bot
+
+## Phase 1: Market Data Extraction Script
+**Goal:** Create a script that takes a Polymarket event URL, interacts with the Polymarket REST API, and retrieves all market IDs and names.
+
+### Tasks:
+- [ ] Develop a script to query the API using a provided event URL.
+- [ ] Extract all available markets (IDs and names) for the event.
+- [ ] Write tests to verify data processing and ensure all markets are captured.
+
+### Success Criteria:
+- Script successfully performs API requests.
+- API returns correct data (verified IDs and market titles).
+- Program correctly extracts all market entities.
+
+---
+
+## Phase 2: Database Setup & Initial Parsing (First 500 Trades)
+**Goal:** Initialize a database to store transaction info and parse the first 500 trades from a selected market.
+
+### Tasks:
+- [ ] Implement an SQLite database to store trade data (timestamp, price, size, and trader address).
+- [ ] Develop a parser to fetch trade data from a specific market.
+- [ ] Limit the initial test fetch to 500 trades.
+- [ ] Save retrieved data into the SQLite database.
+
+### Success Criteria:
+- Database is created and connection is stable.
+- Trade data is accurately saved to the DB.
+- Verified parsing of the first 500 trades (correctness of time, price, volume, and trader).
+
+---
+
+## Phase 3: Parser Optimization for High-Speed Data Collection
+**Goal:** Optimize the parser to fetch all historical data from the API as quickly as possible while respecting rate limits.
+
+### Tasks:
+- [ ] Optimize the parser using concurrency or asynchronicity (asyncio/httpx).
+- [ ] Implement real-time data processing and database insertion.
+- [ ] Add rate-limiting logic to avoid being throttled or banned by Polymarket API.
+
+### Success Criteria:
+- Parser downloads all data without hitting rate limit errors.
+- Data is consistently written to the database.
+- High performance verified on real-world datasets.
+
+---
+
+## Phase 4: Data Aggregation & Excel Report Generation
+**Goal:** Aggregate collected data by unique trader and generate a formatted Excel report.
+
+### Tasks:
+- [ ] Write an aggregation function to calculate totals for each unique trader.
+- [ ] Implement Excel file generation including trader stats and transaction summaries.
+- [ ] Format the report for readability (sorting by volume or trade count).
+
+### Success Criteria:
+- Trader information is correctly aggregated.
+- Excel file is generated with proper formatting.
+- Data accuracy verified (sums and counts match the database).
+
+---
+
+## Phase 5: Telegram Bot Integration
+**Goal:** Build the Telegram bot interface to handle user links and deliver reports.
+
+### Tasks:
+- [ ] Implement core bot functionality: receiving URLs and displaying market selection buttons.
+- [ ] Integrate the parser and report generation logic into the bot's workflow.
+- [ ] Implement file delivery (sending the Excel report to the user).
+- [ ] Add error handling and logging.
+
+### Success Criteria:
+- Bot correctly accepts URLs and generates interactive buttons.
+- Bot sends the correct Excel report upon request.
+- Stable performance across different user sessions.
+
+---
+
+## Phase 6: Project Refinement & Documentation
+**Goal:** Clean up the codebase, improve structure, and finalize documentation for deployment.
+
+### Tasks:
+- [ ] Refactor code according to PEP 8 standards.
+- [ ] Write comprehensive documentation for functions and classes.
+- [ ] Remove redundant or debug code.
+- [ ] Prepare the project for GitHub/Server deployment.
+
+### Success Criteria:
+- Code is well-structured and readable.
+- Documentation is complete.
+- System remains stable after final refactoring.

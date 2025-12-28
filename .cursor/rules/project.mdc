@@ -1,0 +1,58 @@
+# Polymarket Telegram Bot - Project Documentation
+
+## Project Description
+This project is a Telegram bot that interacts with the Polymarket API to retrieve market trade information and generates an Excel report for users. The bot allows users to input an event link, displays all available markets for that event, and provides transaction data for the selected market. The final report is saved as an Excel file and sent directly to the user.
+
+## How the Program Works
+
+### 1. Retrieving Event Information
+Upon receiving an event link, the program queries the Polymarket API to fetch all available markets associated with the specified event. The API returns market data, including unique IDs and titles.
+
+### 2. Displaying Market Buttons
+The bot generates interactive Telegram buttons labeled with the names of each retrieved market for the user to select.
+
+### 3. Market Selection
+Once the user selects a market, the program stores the Market ID. At this point, the bot ceases direct interaction with the user and moves to the background data-processing phase.
+
+### 4. API Data Collection
+After the Market ID is obtained, the program requests all trade data for that market via the Polymarket API.
+
+- SQLite is used for temporary storage of transaction data.
+- Each API request is throttled according to time constraints to prevent exceeding rate limits.
+
+### 5. Report Generation
+After all data is collected, the program aggregates the information by unique trader address. An Excel report is created, showcasing specific trade data for each individual trader.
+
+### 6. Sending the File to the User
+The final Excel report is transmitted to the user through the Telegram chat.
+
+### 7. Database Cleanup
+Immediately after the report is sent, the temporary SQLite database is deleted to ensure data privacy and optimize storage.
+
+## Bot Interaction Guide
+
+### Authorization and Start:
+- The user logs into the bot using standard Telegram mechanisms.
+- Upon entry, a "Get Info" (Получить инфу) button appears. Clicking it prompts the user to enter a Polymarket event link.
+
+### Market Information:
+- The bot fetches markets via the Polymarket API and displays them as selection buttons.
+
+### Selection and Processing:
+- The user selects a market. The bot saves the ID and begins the background parsing process.
+
+### Data Fetching:
+- The system queries the selected market's trades, storing them temporarily in SQLite while respecting API limits.
+
+### Aggregation:
+- The system groups data by trader and compiles a comprehensive Excel file.
+
+### Delivery:
+- The user receives the file in Telegram, and the temporary database is wiped.
+
+## Technical Stack
+- **Python 3.x** – Core programming language for bot and logic implementation.
+- **SQLite** – Database for temporary trade data storage.
+- **Telegram API (aiogram)** – Framework for bot-user interaction.
+- **Polymarket API** – Source for event, market, and transaction data.
+- **Pandas/Openpyxl** – For data aggregation and Excel file generation.
