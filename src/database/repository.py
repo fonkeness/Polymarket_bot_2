@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from sqlite3 import Connection
 
 from beartype import beartype
-
-if TYPE_CHECKING:
-    from sqlite3 import Connection
 
 from src.database.connection import get_connection
 
