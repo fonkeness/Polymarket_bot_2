@@ -11,7 +11,7 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def find_clob_contract(max_blocks: int = 200) -> None:
+def find_clob_contract(max_blocks: int = 1000) -> None:
     """Find CLOB contract by scanning recent blocks."""
     print("=" * 60)
     print("Auto-searching for Polymarket CLOB contract...")
@@ -27,9 +27,13 @@ def find_clob_contract(max_blocks: int = 200) -> None:
             print(f"Scanning from block {from_block} to {current_block}")
             print("\nThis may take a few minutes...\n")
             
-            # Event signature for OrderFilled
-            event_signature = "OrderFilled(address,bytes32,int256,int256,address,uint256)"
-            event_topic = client.web3.keccak(text=event_signature).hex()
+            # Try multiple event signatures - Polymarket might use different ones
+            event_signatures = [
+                "OrderFilled(address,bytes32,int256,int256,address,uint256)",
+                "FillOrder(address,bytes32,int256,int256,address,uint256)",
+                "OrderFilled(address,bytes32,uint256,uint256,address,uint256)",
+                "Trade(address,bytes32,int256,int256,address,uint256)",
+            ]
             
             # Dictionary to count events per contract
             contract_event_counts: dict[str, int] = {}
@@ -39,32 +43,41 @@ def find_clob_contract(max_blocks: int = 200) -> None:
             total_chunks = (current_block - from_block) // chunk_size + 1
             processed = 0
             
-            for chunk_start in range(from_block, current_block, chunk_size):
-                chunk_end = min(chunk_start + chunk_size - 1, current_block)
-                processed += 1
+            # Try each event signature
+            for event_signature in event_signatures:
+                print(f"\nTrying event signature: {event_signature}")
+                event_topic = client.web3.keccak(text=event_signature).hex()
                 
-                if processed % 5 == 0:
-                    progress = (processed / total_chunks) * 100
-                    print(f"Progress: {processed}/{total_chunks} chunks ({progress:.1f}%)")
+                for chunk_start in range(from_block, current_block, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size - 1, current_block)
+                    processed += 1
+                    
+                    if processed % 10 == 0:
+                        progress = (processed / (total_chunks * len(event_signatures))) * 100
+                        print(f"Progress: {progress:.1f}%")
+                    
+                    try:
+                        # Get all logs with event signature
+                        # Use hex format for blocks to avoid RPC errors
+                        filter_params = {
+                            "fromBlock": hex(chunk_start),
+                            "toBlock": hex(chunk_end),
+                            "topics": [event_topic],
+                        }
+                        
+                        logs = client.web3.eth.get_logs(filter_params)
+                        
+                        # Count events per contract
+                        for log in logs:
+                            contract_addr = log["address"].lower()
+                            contract_event_counts[contract_addr] = contract_event_counts.get(contract_addr, 0) + 1
+                        
+                    except Exception as e:
+                        # Silently continue on errors (some signatures might not exist)
+                        continue
                 
-                try:
-                    # Get all logs with OrderFilled event
-                    filter_params = {
-                        "fromBlock": chunk_start,
-                        "toBlock": chunk_end,
-                        "topics": [event_topic],
-                    }
-                    
-                    logs = client.web3.eth.get_logs(filter_params)
-                    
-                    # Count events per contract
-                    for log in logs:
-                        contract_addr = log["address"].lower()
-                        contract_event_counts[contract_addr] = contract_event_counts.get(contract_addr, 0) + 1
-                    
-                except Exception as e:
-                    print(f"Warning: Error scanning blocks {chunk_start}-{chunk_end}: {e}")
-                    continue
+                # Reset processed counter for next signature
+                processed = 0
             
             # Sort by event count
             sorted_contracts = sorted(
@@ -121,12 +134,12 @@ def find_clob_contract(max_blocks: int = 200) -> None:
 
 
 if __name__ == "__main__":
-    max_blocks = 200
+    max_blocks = 1000  # Default to 1000 blocks for better chance of finding events
     if len(sys.argv) > 1:
         try:
             max_blocks = int(sys.argv[1])
         except ValueError:
-            print(f"Invalid max_blocks: {sys.argv[1]}, using default 200")
+            print(f"Invalid max_blocks: {sys.argv[1]}, using default 1000")
     
     find_clob_contract(max_blocks)
 
