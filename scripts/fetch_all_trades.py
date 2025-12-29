@@ -82,7 +82,7 @@ def progress_callback(loaded: int, estimated_total: int) -> None:
 
 
 @beartype
-async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 1_000_000) -> None:
+async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 1_000_000, event_slug: str | None = None) -> None:
     """
     Async main function to fetch all trades for a market.
 
@@ -90,6 +90,7 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
         market_id: Polymarket market ID to fetch trades for
         save_to_db: Whether to save trades to database
         max_trades: Maximum number of trades to fetch (protection against infinite loops)
+        event_slug: Optional event slug to get market start date from API
     """
     global _start_time, _last_update_time, _last_loaded, _speed_history
 
@@ -136,6 +137,7 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
             save_to_db=save_to_db,
             progress_callback=progress_callback,
             max_trades=max_trades,
+            event_slug=event_slug,
         )
 
         print("\n" + "=" * 60)
@@ -184,7 +186,7 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
 
 
 @beartype
-def main(market_id: str, save_to_db: bool = True, max_trades: int = 1_000_000) -> None:
+def main(market_id: str, save_to_db: bool = True, max_trades: int = 1_000_000, event_slug: str | None = None) -> None:
     """
     Main entry point (wrapper for async function).
 
@@ -192,20 +194,23 @@ def main(market_id: str, save_to_db: bool = True, max_trades: int = 1_000_000) -
         market_id: Polymarket market ID to fetch trades for
         save_to_db: Whether to save trades to database
         max_trades: Maximum number of trades to fetch
+        event_slug: Optional event slug to get market start date from API
     """
-    asyncio.run(async_main(market_id, save_to_db, max_trades))
+    asyncio.run(async_main(market_id, save_to_db, max_trades, event_slug))
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python scripts/fetch_all_trades.py <market_id> [--no-db] [--max-trades N]")
+        print("Usage: python scripts/fetch_all_trades.py <market_id> [--no-db] [--max-trades N] [--event-slug SLUG]")
         print("\nArguments:")
         print("  market_id      Polymarket market ID")
         print("  --no-db        Don't save to database (only fetch and display)")
         print("  --max-trades N Maximum number of trades to fetch (default: 1,000,000)")
+        print("  --event-slug SLUG  Event slug to get market start date from API (optional)")
         print("\nExample:")
         print("  python scripts/fetch_all_trades.py 0x1234...")
         print("  python scripts/fetch_all_trades.py 0x1234... --max-trades 500000")
+        print("  python scripts/fetch_all_trades.py 0x1234... --event-slug epstein-client-list-released-in-2025-372")
         sys.exit(1)
 
     market_id = sys.argv[1]
@@ -222,5 +227,12 @@ if __name__ == "__main__":
                 print("Error: --max-trades must be a number")
                 sys.exit(1)
 
-    main(market_id, save_to_db=save_to_db, max_trades=max_trades)
+    # Parse --event-slug parameter
+    event_slug = None
+    if "--event-slug" in sys.argv:
+        idx = sys.argv.index("--event-slug")
+        if idx + 1 < len(sys.argv):
+            event_slug = sys.argv[idx + 1]
+
+    main(market_id, save_to_db=save_to_db, max_trades=max_trades, event_slug=event_slug)
 

@@ -257,6 +257,77 @@ async def async_fetch_trades_by_date_range(
 
 
 @beartype
+async def get_market_start_date_from_api(
+    condition_id: str,
+    api_client: AsyncPolymarketAPIClient,
+    event_slug: str | None = None,
+) -> int | None:
+    """
+    Get market start date from API using numeric market ID.
+    
+    Args:
+        condition_id: Market conditionId
+        api_client: Async API client
+        event_slug: Optional event slug to find numeric ID (if not provided, tries condition_id directly)
+    
+    Returns:
+        Start timestamp (Unix timestamp) or None if not found
+    """
+    numeric_id = None
+    
+    # Try to get numeric_id from event if event_slug is provided
+    if event_slug:
+        try:
+            from src.parser.api_client import PolymarketAPIClient
+            sync_client = PolymarketAPIClient()
+            try:
+                event_data = sync_client.get_event_markets(event_slug)
+                markets = event_data.get("markets", [])
+                for market in markets:
+                    if market.get("conditionId") == condition_id:
+                        numeric_id = market.get("id")
+                        break
+            finally:
+                sync_client.close()
+        except Exception:
+            pass
+    
+    # If numeric_id not found, try using condition_id directly (might work)
+    if not numeric_id:
+        numeric_id = condition_id
+    
+    # Try to get market info
+    try:
+        market_info = await api_client.get_market_info(str(numeric_id))
+        
+        # Check for startDateIso first (as mentioned by user)
+        if "startDateIso" in market_info:
+            start_date_str = market_info["startDateIso"]
+            try:
+                dt = datetime.fromisoformat(start_date_str.replace("Z", "+00:00"))
+                return int(dt.timestamp())
+            except (ValueError, AttributeError):
+                pass
+        
+        # Try other possible field names
+        for field_name in ["createdAt", "created_at", "startDate", "start_date", "created"]:
+            if field_name in market_info:
+                field_value = market_info[field_name]
+                if isinstance(field_value, (int, float)):
+                    return int(field_value)
+                elif isinstance(field_value, str):
+                    try:
+                        dt = datetime.fromisoformat(field_value.replace("Z", "+00:00"))
+                        return int(dt.timestamp())
+                    except (ValueError, AttributeError):
+                        pass
+    except Exception:
+        pass
+    
+    return None
+
+
+@beartype
 async def async_fetch_all_trades(
     condition_id: str,
     api_client: AsyncPolymarketAPIClient | None = None,
@@ -264,6 +335,7 @@ async def async_fetch_all_trades(
     save_to_db: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
     max_trades: int = 1_000_000,
+    event_slug: str | None = None,
 ) -> int:
     """
     Fetch ALL trades using date-based pagination to work around API offset bug.
@@ -286,6 +358,7 @@ async def async_fetch_all_trades(
         save_to_db: Whether to save trades to database
         progress_callback: Optional callback function(loaded_count, total_estimated) for progress
         max_trades: Maximum number of trades to fetch (protection against infinite loops)
+        event_slug: Optional event slug to get numeric market ID for startDateIso lookup
 
     Returns:
         Total number of NEW trades fetched and saved
@@ -329,30 +402,10 @@ async def async_fetch_all_trades(
     # Determine start date: try to get from API, fallback to DB or fixed date
     start_timestamp = None
     
-    # Try to get market creation date from API
-    # Note: get_market_info requires numeric ID, but we only have condition_id
-    # Try using condition_id directly - might work if API supports it
-    try:
-        market_info = await api_client.get_market_info(condition_id)
-        # Try different possible field names for creation date
-        for field_name in ["createdAt", "created_at", "startDate", "start_date", "created"]:
-            if field_name in market_info:
-                field_value = market_info[field_name]
-                if isinstance(field_value, (int, float)):
-                    start_timestamp = int(field_value)
-                elif isinstance(field_value, str):
-                    # Try to parse ISO format or other date formats
-                    try:
-                        dt = datetime.fromisoformat(field_value.replace("Z", "+00:00"))
-                        start_timestamp = int(dt.timestamp())
-                    except (ValueError, AttributeError):
-                        pass
-                if start_timestamp:
-                    print(f"✓ Found market creation date from API: {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-                    break
-    except Exception:
-        # API call failed or field not found - use fallback
-        pass
+    # Try to get market start date from API using proper method
+    start_timestamp = await get_market_start_date_from_api(condition_id, api_client, event_slug)
+    if start_timestamp:
+        print(f"✓ Found market start date from API: {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Fallback: use min_timestamp_in_db - 1 day, or fixed date, or current date - 1 year
     if start_timestamp is None:
@@ -387,14 +440,13 @@ async def async_fetch_all_trades(
         batch_buffer: list[tuple[int, float, float, str, str, str]] = []
         BUFFER_SIZE = 2000
         
-        # Process each daily interval
+        # Process each daily interval (from start date to today, day by day)
         for interval_idx, (interval_start, interval_end) in enumerate(date_intervals, 1):
             if total_loaded >= max_trades:
                 print(f"\n⚠️  Reached maximum limit: {max_trades:,} trades. Stopping.")
                 break
             
             interval_date_str = datetime.fromtimestamp(interval_start, tz=timezone.utc).strftime('%Y-%m-%d')
-            print(f"\n[{interval_idx}/{len(date_intervals)}] Fetching trades for {interval_date_str}...")
             
             # Fetch trades for this date range
             trades_data = await async_fetch_trades_by_date_range(
@@ -404,9 +456,6 @@ async def async_fetch_all_trades(
                 api_client,
                 max_offset=1000,  # Stop before offset bug kicks in
             )
-            
-            if not trades_data:
-                continue
             
             # Filter duplicates BEFORE parsing
             new_trades_data = []
@@ -427,8 +476,9 @@ async def async_fetch_all_trades(
                 if parsed:
                     parsed_trades.append(parsed)
             
+            # Display status for this day
             if parsed_trades:
-                print(f"  ✓ Found {len(parsed_trades)} new trades for {interval_date_str}")
+                print(f"[{interval_idx}/{len(date_intervals)}] {interval_date_str} - Получено {len(parsed_trades)} сделок")
                 batch_buffer.extend(parsed_trades)
                 
                 # Save when buffer is full
@@ -451,7 +501,8 @@ async def async_fetch_all_trades(
                     if progress_callback:
                         progress_callback(total_loaded, total_loaded + len(batch_buffer))
             else:
-                print(f"  - No new trades for {interval_date_str}")
+                # Still show status even if no new trades
+                print(f"[{interval_idx}/{len(date_intervals)}] {interval_date_str} - Получено 0 сделок")
         
         # Save remaining buffer
         if batch_buffer:
