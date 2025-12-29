@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import re
-
 from beartype import beartype
-from httpx import HTTPStatusError
 
 from src.extractors.models import Market
 from src.extractors.url_parser import parse_event_url
@@ -21,14 +18,14 @@ def extract_markets(
     Extract all markets from a Polymarket event URL.
 
     Args:
-        event_url: Polymarket event URL (e.g., https://polymarket.com/event/event-slug)
+        event_url: Polymarket event URL with tid parameter (e.g., https://polymarket.com/event/event-slug?tid=12345)
         api_client: Optional API client (creates new if None)
 
     Returns:
         List of Market objects containing market ID and name
 
     Raises:
-        ValueError: If the URL format is invalid
+        ValueError: If the URL format is invalid or doesn't contain tid parameter
         HTTPError: If the API request fails
     """
     should_close = api_client is None
@@ -36,28 +33,11 @@ def extract_markets(
         api_client = PolymarketAPIClient()
 
     try:
-        # Parse URL to get event slug
-        event_slug = parse_event_url(event_url)
+        # Parse URL to get event ID (tid from query parameter)
+        event_id = parse_event_url(event_url)
 
-        # Query API for markets - try with original slug first
-        try:
-            response = api_client.get_event_markets(event_slug)
-        except HTTPStatusError as e:
-            # If 404, try without numeric suffix (e.g., "slug-123" -> "slug")
-            # Many Polymarket URLs have numeric suffixes that may not work with API
-            if e.response.status_code == 404:
-                # Try removing trailing numeric suffix
-                slug_without_suffix = re.sub(r'-\d+$', '', event_slug)
-                if slug_without_suffix != event_slug and slug_without_suffix:
-                    try:
-                        response = api_client.get_event_markets(slug_without_suffix)
-                    except Exception:
-                        # Re-raise original error if fallback also fails
-                        raise e
-                else:
-                    raise e
-            else:
-                raise e
+        # Query API for markets using event_id
+        response = api_client.get_event_markets(event_id)
 
         # Parse response to extract market data
         markets_data = response.get("data", [])

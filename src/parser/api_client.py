@@ -115,12 +115,12 @@ class PolymarketAPIClient:
         return response.json()
 
     @beartype
-    def get_event_markets(self, event_slug: str) -> dict[str, object]:
+    def get_event_markets(self, event_id: str) -> dict[str, object]:
         """
         Fetch all markets for a specific event.
 
         Args:
-            event_slug: Polymarket event slug/identifier
+            event_id: Polymarket event ID (tid from URL query parameter)
 
         Returns:
             API response containing market data as a dictionary
@@ -128,7 +128,7 @@ class PolymarketAPIClient:
         Raises:
             HTTPError: If the API request fails
         """
-        params: dict[str, object] = {"event": event_slug}
+        params: dict[str, object] = {"event": event_id}
         response = self._request("GET", "markets", params=params)
         return response.json()
 
