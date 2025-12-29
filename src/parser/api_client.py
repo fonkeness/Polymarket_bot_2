@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Mapping
 
 from beartype import beartype
-from httpx import Client, HTTPError, Response
+from httpx import AsyncClient, Client, HTTPError, Response
 
-from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL, POLYMARKET_GAMMA_API_URL, POLYMARKET_DATA_API_URL
+from src.utils.config import (
+    API_RATE_LIMIT,
+    POLYMARKET_API_V1_URL,
+    POLYMARKET_GAMMA_API_URL,
+    POLYMARKET_DATA_API_URL,
+)
 
 
 class PolymarketAPIClient:
@@ -174,4 +180,101 @@ class PolymarketAPIClient:
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         """Context manager exit."""
         self.close()
+
+
+class AsyncPolymarketAPIClient:
+    """Async client for interacting with the Polymarket API."""
+
+    def __init__(self, rate_limit: float = API_RATE_LIMIT) -> None:
+        """
+        Initialize the async API client.
+
+        Args:
+            rate_limit: Maximum requests per second
+        """
+        self.rate_limit = rate_limit
+        self.last_request_time = 0.0
+        self.client = AsyncClient(timeout=30.0)
+        self._rate_limit_lock = asyncio.Lock()
+
+    async def _wait_for_rate_limit(self) -> None:
+        """Wait if necessary to respect rate limits."""
+        async with self._rate_limit_lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            min_interval = 1.0 / self.rate_limit
+
+            if time_since_last < min_interval:
+                sleep_time = min_interval - time_since_last
+                await asyncio.sleep(sleep_time)
+
+            self.last_request_time = time.time()
+
+    @beartype
+    async def get_market_condition_id(self, market_id: str) -> str:
+        """
+        Get conditionId for a market using its numeric ID from Gamma API.
+
+        Args:
+            market_id: Numeric market ID from Gamma API
+
+        Returns:
+            conditionId string
+
+        Raises:
+            HTTPError: If the API request fails
+        """
+        url = f"{POLYMARKET_GAMMA_API_URL}/markets/{market_id}"
+        await self._wait_for_rate_limit()
+        response = await self.client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        condition_id = data.get("conditionId")
+        if not condition_id:
+            raise ValueError(f"conditionId not found for market {market_id}")
+        return str(condition_id)
+
+    @beartype
+    async def get_trades(
+        self,
+        condition_id: str,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        """
+        Fetch trades for a specific market using conditionId via Data API with offset pagination.
+
+        Args:
+            condition_id: Market conditionId (not numeric ID)
+            limit: Maximum number of trades to fetch per page
+            offset: Offset for pagination (number of trades to skip)
+
+        Returns:
+            List of trade dictionaries (data-api returns array directly)
+
+        Raises:
+            HTTPError: If the API request fails
+        """
+        url = f"{POLYMARKET_DATA_API_URL}/trades"
+        params: dict[str, object] = {"market": condition_id, "limit": limit, "offset": offset}
+        await self._wait_for_rate_limit()
+        response = await self.client.get(url, params=params)
+        response.raise_for_status()
+        trades = response.json()
+        # Data API returns array directly, not wrapped in object
+        if not isinstance(trades, list):
+            return []
+        return trades
+
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        await self.client.aclose()
+
+    async def __aenter__(self) -> AsyncPolymarketAPIClient:
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Async context manager exit."""
+        await self.close()
 

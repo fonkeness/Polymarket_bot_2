@@ -22,3 +22,7 @@ INITIAL_TRADE_LIMIT = 500
 # API rate limiting (requests per second)
 API_RATE_LIMIT = 10.0  # Conservative default
 
+# Async configuration
+ASYNC_CONCURRENT_REQUESTS = 5  # Number of parallel requests
+ASYNC_BATCH_SIZE = 1000  # Batch size for DB saving
+

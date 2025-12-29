@@ -1,7 +1,8 @@
-"""Script to fetch all trades from Polymarket API using pagination."""
+"""Script to fetch all trades from Polymarket API using async pagination."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -11,22 +12,27 @@ from beartype import beartype
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database.connection import initialize_database
-from src.database.repository import get_trade_count, insert_trades_batch
-from src.parser.api_client import PolymarketAPIClient
-from src.parser.trade_parser import fetch_all_trades
+from src.database.repository import get_trade_count
+from src.parser.api_client import AsyncPolymarketAPIClient
+from src.parser.trade_parser import async_fetch_all_trades
+
+
+def progress_callback(loaded: int, estimated_total: int) -> None:
+    """Progress callback for async_fetch_all_trades."""
+    print(f"Loaded {loaded} trades...", end="\r", flush=True)
 
 
 @beartype
-def main(market_id: str, save_to_db: bool = True) -> None:
+async def async_main(market_id: str, save_to_db: bool = True) -> None:
     """
-    Main function to fetch all trades for a market.
+    Async main function to fetch all trades for a market.
 
     Args:
         market_id: Polymarket market ID to fetch trades for
         save_to_db: Whether to save trades to database
     """
     print("=" * 60)
-    print("Fetch ALL Trades from Polymarket API")
+    print("Fetch ALL Trades from Polymarket API (Async Mode)")
     print("=" * 60)
     print(f"Market ID: {market_id}")
     print("-" * 60)
@@ -38,11 +44,11 @@ def main(market_id: str, save_to_db: bool = True) -> None:
         print("Database initialized.\n")
 
     # Get conditionId from numeric market_id if needed
-    api_client = PolymarketAPIClient()
+    api_client = AsyncPolymarketAPIClient()
     try:
         print("Getting conditionId...")
         try:
-            condition_id = api_client.get_market_condition_id(market_id)
+            condition_id = await api_client.get_market_condition_id(market_id)
             print(f"Got conditionId: {condition_id}\n")
         except Exception as e:
             # If get_market_condition_id fails, assume market_id is already a conditionId
@@ -50,25 +56,26 @@ def main(market_id: str, save_to_db: bool = True) -> None:
             condition_id = market_id
 
         print("Starting to fetch all trades (this may take a while)...\n")
-        
-        # Fetch all trades using the fetch_all_trades function
-        all_trades = fetch_all_trades(condition_id, api_client=api_client, limit_per_page=500)
+
+        # Fetch all trades using async function with real-time saving
+        total_loaded = await async_fetch_all_trades(
+            condition_id,
+            api_client=api_client,
+            limit_per_page=1000,
+            save_to_db=save_to_db,
+            progress_callback=progress_callback,
+        )
 
         print("\n" + "=" * 60)
-        print(f"✓ Successfully fetched {len(all_trades)} total trades")
+        print(f"✓ Successfully fetched {total_loaded} total trades")
         print("=" * 60)
 
-        if not all_trades:
+        if total_loaded == 0:
             print("No trades found.")
             return
 
-        # Save to database
+        # Verify (use condition_id for DB query since that's what we stored)
         if save_to_db:
-            print("\nSaving trades to database...")
-            inserted_count = insert_trades_batch(all_trades)
-            print(f"✓ Successfully inserted {inserted_count} trades into database.")
-
-            # Verify (use condition_id for DB query since that's what we stored)
             total_count = get_trade_count(condition_id)
             print(f"✓ Total trades in database for market {condition_id}: {total_count}")
 
@@ -79,7 +86,19 @@ def main(market_id: str, save_to_db: bool = True) -> None:
         traceback.print_exc()
         sys.exit(1)
     finally:
-        api_client.close()
+        await api_client.close()
+
+
+@beartype
+def main(market_id: str, save_to_db: bool = True) -> None:
+    """
+    Main entry point (wrapper for async function).
+
+    Args:
+        market_id: Polymarket market ID to fetch trades for
+        save_to_db: Whether to save trades to database
+    """
+    asyncio.run(async_main(market_id, save_to_db))
 
 
 if __name__ == "__main__":

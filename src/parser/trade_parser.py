@@ -9,7 +9,8 @@ from beartype import beartype
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from src.parser.api_client import PolymarketAPIClient
+from src.database.repository import insert_trades_batch
+from src.parser.api_client import AsyncPolymarketAPIClient, PolymarketAPIClient
 
 
 @beartype
@@ -76,6 +77,88 @@ def fetch_trades(
     finally:
         if should_close:
             api_client.close()
+
+
+@beartype
+async def async_fetch_all_trades(
+    condition_id: str,
+    api_client: AsyncPolymarketAPIClient | None = None,
+    limit_per_page: int = 1000,
+    save_to_db: bool = True,
+    progress_callback: ((int, int) -> None) | None = None,
+) -> int:
+    """
+    Fetch ALL trades from Polymarket Data API using async and offset pagination.
+
+    This function uses offset-based pagination to fetch all historical trades.
+    Results are sorted by timestamp descending (newest first).
+    Trades are saved to database in real-time batches to avoid memory issues.
+
+    Args:
+        condition_id: Market conditionId (not numeric ID)
+        api_client: Optional async API client (creates new if None)
+        limit_per_page: Number of trades to fetch per page (max 1000 recommended)
+        save_to_db: Whether to save trades to database in real-time
+        progress_callback: Optional callback function(loaded_count, total_estimated) for progress
+
+    Returns:
+        Total number of trades fetched and saved
+    """
+    should_close = api_client is None
+    if api_client is None:
+        api_client = AsyncPolymarketAPIClient()
+
+    try:
+        total_loaded = 0
+        offset = 0
+
+        while True:
+            # Fetch trades batch
+            trades_data = await api_client.get_trades(
+                condition_id, limit=limit_per_page, offset=offset
+            )
+
+            if not trades_data:
+                # No more trades
+                break
+
+            # Parse all trades from this batch
+            parsed_trades: list[tuple[int, float, float, str, str]] = []
+            for trade in trades_data:
+                parsed = parse_trade_data(trade, condition_id)
+                if parsed:
+                    parsed_trades.append(parsed)
+
+            if not parsed_trades:
+                # No valid trades in this batch
+                break
+
+            # Save to database in real-time
+            if save_to_db:
+                inserted_count = insert_trades_batch(parsed_trades)
+                total_loaded += inserted_count
+            else:
+                total_loaded += len(parsed_trades)
+
+            # Progress callback
+            if progress_callback:
+                # Estimate total (might be inaccurate, but gives user feedback)
+                estimated_total = (
+                    total_loaded + limit_per_page if len(trades_data) == limit_per_page else total_loaded
+                )
+                progress_callback(total_loaded, estimated_total)
+
+            # Check if we got fewer trades than requested (last page)
+            if len(trades_data) < limit_per_page:
+                break
+
+            # Move to next page
+            offset += limit_per_page
+
+        return total_loaded
+    finally:
+        if should_close:
+            await api_client.close()
 
 
 @beartype
