@@ -18,14 +18,45 @@ async def test_market_info_fields():
     
     # Using a known market condition_id
     condition_id = "0x0576b194302d7d0a3f7bfc1b843cef4a5c9d582a3f424f879c15441feed78f01"
+    event_slug = "epstein-client-list-released-in-2025-372"
     
-    async with AsyncPolymarketAPIClient() as api_client:
-        try:
-            # Try to get market info using condition_id
-            print(f"\n1. Trying to get market info using condition_id: {condition_id}")
-            print("-" * 80)
+    # First, get numeric ID from event (required for Gamma API)
+    print(f"\n1. Getting numeric market ID from event...")
+    print("-" * 80)
+    
+    from src.parser.api_client import PolymarketAPIClient
+    sync_client = PolymarketAPIClient()
+    
+    try:
+        event_data = sync_client.get_event_markets(event_slug)
+        markets = event_data.get("markets", [])
+        
+        if not markets:
+            print("✗ No markets found in event")
+            return
+        
+        # Find market with matching condition_id
+        target_market = None
+        for market in markets:
+            if market.get("conditionId") == condition_id:
+                target_market = market
+                break
+        
+        if not target_market:
+            print(f"✗ Market with condition_id {condition_id} not found")
+            return
+        
+        numeric_id = target_market.get("id")
+        print(f"✓ Found numeric ID: {numeric_id}")
+        print(f"  Market name: {target_market.get('question', 'N/A')}")
+        
+        # Now try to get market info using numeric ID with async client (Gamma API)
+        print(f"\n2. Getting market info using numeric ID with Gamma API...")
+        print("-" * 80)
+        
+        async with AsyncPolymarketAPIClient() as api_client:
             try:
-                market_info = await api_client.get_market_info(condition_id)
+                market_info = await api_client.get_market_info(str(numeric_id))
                 print("✓ Success! Response fields:")
                 print(json.dumps(market_info, indent=2, default=str))
                 
@@ -57,24 +88,11 @@ async def test_market_info_fields():
                         
             except Exception as e:
                 print(f"✗ Error: {type(e).__name__}: {e}")
-                print("\nNote: get_market_info might require numeric ID instead of condition_id")
-                
-                # Try to get numeric ID first
-                print("\n2. Trying to get numeric ID from condition_id...")
-                print("-" * 80)
-                try:
-                    # We need to find numeric ID - let's try getting event markets
-                    # For now, let's document what we found
-                    print("⚠️  Need numeric market ID. You can get it from:")
-                    print("   - Gamma API: GET /events/slug/{slug} -> markets[].id")
-                    print("   - Or from market page URL")
-                except Exception as e2:
-                    print(f"✗ Error: {type(e2).__name__}: {e2}")
-        
-        except Exception as e:
-            print(f"✗ Unexpected error: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+                import traceback
+                traceback.print_exc()
+    
+    finally:
+        sync_client.close()
 
 
 async def test_with_numeric_id():
@@ -111,12 +129,12 @@ async def test_event_markets():
     
     event_slug = "epstein-client-list-released-in-2025-372"
     
-    async with AsyncPolymarketAPIClient() as api_client:
-        try:
-            # Note: get_event_markets is sync, but we can check the response structure
-            from src.parser.api_client import PolymarketAPIClient
-            sync_client = PolymarketAPIClient()
-            event_data = sync_client.get_event_markets(event_slug)
+    # Note: get_event_markets is sync, but we use async client for get_market_info
+    from src.parser.api_client import PolymarketAPIClient
+    sync_client = PolymarketAPIClient()
+    
+    try:
+        event_data = sync_client.get_event_markets(event_slug)
             
             print("✓ Event data retrieved!")
             print("\nEvent structure:")
@@ -151,43 +169,48 @@ async def test_event_markets():
                 else:
                     print("\n⚠️  No standard date fields found in market object")
                     
-                # Try to get market info using numeric ID
+                # Try to get market info using numeric ID with async client (Gamma API)
                 if "id" in first_market:
                     numeric_id = first_market["id"]
                     print(f"\n" + "=" * 80)
-                    print(f"Testing get_market_info with numeric ID: {numeric_id}")
+                    print(f"Testing get_market_info with numeric ID: {numeric_id} (using Gamma API)")
                     print("=" * 80)
                     try:
-                        market_info = sync_client.get_market_info(str(numeric_id))
-                        print("✓ Success! Market info fields:")
-                        print(json.dumps(market_info, indent=2, default=str))
-                        
-                        # Check for date fields
-                        print("\n" + "=" * 80)
-                        print("Date-related fields in market info:")
-                        print("=" * 80)
-                        found_fields = {}
-                        for field in date_fields:
-                            if field in market_info:
-                                found_fields[field] = market_info[field]
-                        
-                        if found_fields:
-                            print("\n✓ Found date fields:")
-                            for field, value in found_fields.items():
-                                print(f"  - {field}: {value} (type: {type(value).__name__})")
-                        else:
-                            print("\n⚠️  No standard date fields found. All fields:")
-                            for key, value in market_info.items():
-                                if any(date_word in key.lower() for date_word in ["date", "time", "created", "start"]):
-                                    print(f"  - {key}: {value} (type: {type(value).__name__})")
+                        # Use async client for Gamma API (not sync client which uses CLOB API)
+                        async with AsyncPolymarketAPIClient() as async_api_client:
+                            market_info = await async_api_client.get_market_info(str(numeric_id))
+                            print("✓ Success! Market info fields:")
+                            print(json.dumps(market_info, indent=2, default=str))
+                            
+                            # Check for date fields
+                            print("\n" + "=" * 80)
+                            print("Date-related fields in market info:")
+                            print("=" * 80)
+                            found_fields = {}
+                            for field in date_fields:
+                                if field in market_info:
+                                    found_fields[field] = market_info[field]
+                            
+                            if found_fields:
+                                print("\n✓ Found date fields:")
+                                for field, value in found_fields.items():
+                                    print(f"  - {field}: {value} (type: {type(value).__name__})")
+                            else:
+                                print("\n⚠️  No standard date fields found. All fields:")
+                                for key, value in market_info.items():
+                                    if any(date_word in key.lower() for date_word in ["date", "time", "created", "start"]):
+                                        print(f"  - {key}: {value} (type: {type(value).__name__})")
                     except Exception as e:
                         print(f"✗ Error getting market info: {type(e).__name__}: {e}")
-            
-            sync_client.close()
-        except Exception as e:
-            print(f"✗ Error: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+                        import traceback
+                        traceback.print_exc()
+    
+    except Exception as e:
+        print(f"✗ Error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        sync_client.close()
 
 
 async def main():
