@@ -44,7 +44,7 @@ def create_trade_signature(trade: dict[str, object]) -> str | None:
 
 
 @beartype
-def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, float, float, str, str] | None:
+def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, float, float, str, str, str] | None:
     """
     Parse a single trade from API response to database format.
 
@@ -53,7 +53,7 @@ def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, flo
         market_id: Market conditionId to associate with this trade
 
     Returns:
-        Tuple of (timestamp, price, size, trader_address, market_id) or None if invalid
+        Tuple of (timestamp, price, size, trader_address, market_id, side) or None if invalid
     """
     try:
         timestamp = int(trade.get("timestamp", 0))
@@ -61,12 +61,14 @@ def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, flo
         size = float(trade.get("size", 0.0))
         # Data API uses "proxyWallet" instead of "user"
         trader_address = str(trade.get("proxyWallet", ""))
+        # Extract side (buy/sell)
+        side = str(trade.get("side", "")).lower() or "unknown"
 
         # Validate required fields
         if not trader_address or timestamp <= 0:
             return None
 
-        return (timestamp, price, size, trader_address, market_id)
+        return (timestamp, price, size, trader_address, market_id, side)
     except (ValueError, KeyError, TypeError):
         return None
 
@@ -76,7 +78,7 @@ def fetch_trades(
     condition_id: str,
     limit: int = 500,
     api_client: PolymarketAPIClient | None = None,
-) -> list[tuple[int, float, float, str, str]]:
+) -> list[tuple[int, float, float, str, str, str]]:
     """
     Fetch and parse trades from the Polymarket Data API.
 
@@ -86,7 +88,7 @@ def fetch_trades(
         api_client: Optional API client (creates new if None)
 
     Returns:
-        List of parsed trades as tuples (timestamp, price, size, trader_address, market_id)
+        List of parsed trades as tuples (timestamp, price, size, trader_address, market_id, side)
     """
     should_close = api_client is None
     if api_client is None:
@@ -97,7 +99,7 @@ def fetch_trades(
         trades_data = api_client.get_trades(condition_id, limit=limit)
 
         # Parse all trades
-        parsed_trades: list[tuple[int, float, float, str, str]] = []
+        parsed_trades: list[tuple[int, float, float, str, str, str]] = []
         for trade in trades_data:
             parsed = parse_trade_data(trade, condition_id)
             if parsed:
@@ -189,7 +191,7 @@ async def async_fetch_all_trades(
         max_iterations = max_trades // effective_limit + 100
 
         # Buffer for batching DB operations
-        batch_buffer: list[tuple[int, float, float, str, str]] = []
+        batch_buffer: list[tuple[int, float, float, str, str, str]] = []
         BUFFER_SIZE = 2000  # Save every 2000 trades instead of every 500
 
         while True:
@@ -245,7 +247,7 @@ async def async_fetch_all_trades(
             last_batch_signatures = current_batch_signatures
 
             # Parse ONLY unique trades (saves CPU!)
-            parsed_trades: list[tuple[int, float, float, str, str]] = []
+            parsed_trades: list[tuple[int, float, float, str, str, str]] = []
             for trade in new_trades_data:
                 parsed = parse_trade_data(trade, condition_id)
                 if parsed:
@@ -268,7 +270,7 @@ async def async_fetch_all_trades(
                 if save_to_db and db_conn:
                     cursor = db_conn.cursor()
                     cursor.executemany(
-                        "INSERT INTO trades (timestamp, price, size, trader_address, market_id) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
                         batch_buffer,
                     )
                     db_conn.commit()
@@ -309,7 +311,7 @@ async def async_fetch_all_trades(
             if save_to_db and db_conn:
                 cursor = db_conn.cursor()
                 cursor.executemany(
-                    "INSERT INTO trades (timestamp, price, size, trader_address, market_id) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
                     batch_buffer,
                 )
                 db_conn.commit()
@@ -339,7 +341,7 @@ def fetch_all_trades(
     condition_id: str,
     api_client: PolymarketAPIClient | None = None,
     limit_per_page: int = 500,
-) -> list[tuple[int, float, float, str, str]]:
+) -> list[tuple[int, float, float, str, str, str]]:
     """
     Fetch ALL trades from Polymarket Data API.
 
@@ -353,7 +355,7 @@ def fetch_all_trades(
         limit_per_page: Number of trades to fetch (Data API may have its own limits)
 
     Returns:
-        List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id)
+        List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id, side)
     """
     should_close = api_client is None
     if api_client is None:
@@ -365,7 +367,7 @@ def fetch_all_trades(
         trades_data = api_client.get_trades(condition_id, limit=limit_per_page)
 
         # Parse all trades
-        parsed_trades: list[tuple[int, float, float, str, str]] = []
+        parsed_trades: list[tuple[int, float, float, str, str, str]] = []
         for trade in trades_data:
             parsed = parse_trade_data(trade, condition_id)
             if parsed:

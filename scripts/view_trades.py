@@ -24,7 +24,7 @@ def view_trades(market_id: str, limit: int = 20) -> None:
         print("No trades found.")
         return
     
-    print(f"{'Date':<20} {'Price':<12} {'Size':<15} {'Trader Address':<45}")
+    print(f"{'Date':<20} {'Price':<12} {'Size':<15} {'Side':<6} {'Trader Address':<45}")
     print("-" * 100)
     
     for trade in trades:
@@ -32,7 +32,8 @@ def view_trades(market_id: str, limit: int = 20) -> None:
         trader = trade['trader_address']
         if len(trader) > 43:
             trader = trader[:40] + '...'
-        print(f"{date_str:<20} {trade['price']:<12.6f} {trade['size']:<15.6f} {trader:<45}")
+        side = trade.get('side', 'unknown')
+        print(f"{date_str:<20} {trade['price']:<12.6f} {trade['size']:<15.6f} {side:<6} {trader:<45}")
 
 
 if __name__ == "__main__":

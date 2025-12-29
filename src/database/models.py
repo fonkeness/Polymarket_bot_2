@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS trades (
     size REAL NOT NULL,
     trader_address TEXT NOT NULL,
     market_id TEXT NOT NULL,
+    side TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """

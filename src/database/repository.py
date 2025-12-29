@@ -16,6 +16,7 @@ def insert_trade(
     size: float,
     trader_address: str,
     market_id: str,
+    side: str = "unknown",
     conn: Connection | None = None,
 ) -> int:
     """
@@ -27,6 +28,7 @@ def insert_trade(
         size: Size/volume of the trade
         trader_address: Ethereum address of the trader
         market_id: Polymarket market ID
+        side: Trade side (buy/sell)
         conn: Optional database connection (creates new if None)
 
     Returns:
@@ -40,13 +42,14 @@ def insert_trade(
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO trades (timestamp, price, size, trader_address, market_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO trades (timestamp, price, size, trader_address, market_id, side)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (timestamp, price, size, trader_address, market_id),
+            (timestamp, price, size, trader_address, market_id, side),
         )
         conn.commit()
-        return cursor.lastrowid
+        row_id = cursor.lastrowid
+        return row_id if row_id is not None else 0
     finally:
         if should_close:
             conn.close()
@@ -54,14 +57,14 @@ def insert_trade(
 
 @beartype
 def insert_trades_batch(
-    trades: list[tuple[int, float, float, str, str]],
+    trades: list[tuple[int, float, float, str, str, str]],
     conn: Connection | None = None,
 ) -> int:
     """
     Insert multiple trades in a single transaction.
 
     Args:
-        trades: List of tuples (timestamp, price, size, trader_address, market_id)
+        trades: List of tuples (timestamp, price, size, trader_address, market_id, side)
         conn: Optional database connection (creates new if None)
 
     Returns:
@@ -75,8 +78,8 @@ def insert_trades_batch(
         cursor = conn.cursor()
         cursor.executemany(
             """
-            INSERT OR IGNORE INTO trades (timestamp, price, size, trader_address, market_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO trades (timestamp, price, size, trader_address, market_id, side)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             trades,
         )

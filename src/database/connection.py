@@ -33,6 +33,13 @@ def initialize_database() -> None:
         # Create trades table
         cursor.execute(TRADES_TABLE_SCHEMA)
 
+        # Migrate: Add side column if it doesn't exist (for existing databases)
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN side TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists, ignore
+            pass
+
         # Create indexes
         for index_sql in TRADES_INDEXES:
             cursor.execute(index_sql)
