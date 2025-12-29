@@ -192,10 +192,35 @@ class PolymarketAPIClient:
                             print(f"Error: The Graph indexer unavailable after {max_retries} attempts. Returning empty list.")
                             print(f"DEBUG: Full API response: {result}")
                             return []  # Return empty list instead of raising error
+                    # Check if it's a schema error (may be temporary - retryable)
+                    elif "no field" in error_str or "unknown field" in error_str:
+                        if attempt < max_retries - 1:
+                            # Exponential backoff: 2^attempt seconds
+                            wait_time = 2 ** attempt
+                            print(f"Warning: The Graph schema error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                            print(f"DEBUG: Full API response: {result}")
+                            time.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            # After all retries, return empty list instead of crashing
+                            print(f"Error: The Graph schema error after {max_retries} attempts. Field 'trades' not found.")
+                            print(f"DEBUG: Full API response: {result}")
+                            print(f"Warning: This may indicate the subgraph schema has changed or the subgraph ID is incorrect.")
+                            return []  # Return empty list instead of raising error
                     else:
-                        # Non-retryable error
+                        # Non-retryable error - but still return empty list instead of crashing
+                        print(f"Warning: The Graph API error: {error_msg}")
                         print(f"DEBUG: Full API response: {result}")
-                        raise HTTPError(f"The Graph API error: {error_msg}")
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt
+                            print(f"Retrying in {wait_time}s...")
+                            time.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            print(f"Error: Returning empty list after {max_retries} attempts.")
+                            return []  # Return empty list instead of raising error
                 
                 # The Graph returns data in {"data": {"trades": [...]}} format
                 # Check if data exists and is not None before checking for trades
@@ -438,10 +463,35 @@ class AsyncPolymarketAPIClient:
                             print(f"Error: The Graph indexer unavailable after {max_retries} attempts. Returning empty list.")
                             print(f"DEBUG: Full API response: {result}")
                             return []  # Return empty list instead of raising error
+                    # Check if it's a schema error (may be temporary - retryable)
+                    elif "no field" in error_str or "unknown field" in error_str:
+                        if attempt < max_retries - 1:
+                            # Exponential backoff: 2^attempt seconds
+                            wait_time = 2 ** attempt
+                            print(f"Warning: The Graph schema error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                            print(f"DEBUG: Full API response: {result}")
+                            await asyncio.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            # After all retries, return empty list instead of crashing
+                            print(f"Error: The Graph schema error after {max_retries} attempts. Field 'trades' not found.")
+                            print(f"DEBUG: Full API response: {result}")
+                            print(f"Warning: This may indicate the subgraph schema has changed or the subgraph ID is incorrect.")
+                            return []  # Return empty list instead of raising error
                     else:
-                        # Non-retryable error
+                        # Non-retryable error - but still return empty list instead of crashing
+                        print(f"Warning: The Graph API error: {error_msg}")
                         print(f"DEBUG: Full API response: {result}")
-                        raise HTTPError(f"The Graph API error: {error_msg}")
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt
+                            print(f"Retrying in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            print(f"Error: Returning empty list after {max_retries} attempts.")
+                            return []  # Return empty list instead of raising error
                 
                 # The Graph returns data in {"data": {"trades": [...]}} format
                 # Check if data exists and is not None before checking for trades
