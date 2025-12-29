@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from beartype import beartype
 from httpx import Client, HTTPError, Response
 
-from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL, POLYMARKET_GAMMA_API_URL
+from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL, POLYMARKET_GAMMA_API_URL, POLYMARKET_DATA_API_URL
 
 
 class PolymarketAPIClient:
@@ -70,32 +70,60 @@ class PolymarketAPIClient:
         return response
 
     @beartype
-    def get_trades(
-        self,
-        market_id: str,
-        limit: int = 500,
-        cursor: str | None = None,
-    ) -> dict[str, object]:
+    def get_market_condition_id(self, market_id: str) -> str:
         """
-        Fetch trades for a specific market.
+        Get conditionId for a market using its numeric ID from Gamma API.
 
         Args:
-            market_id: Polymarket market ID
-            limit: Maximum number of trades to fetch
-            cursor: Pagination cursor for fetching more results
+            market_id: Numeric market ID from Gamma API
 
         Returns:
-            API response as a dictionary
+            conditionId string
 
         Raises:
             HTTPError: If the API request fails
         """
-        params: dict[str, object] = {"market": market_id, "limit": limit}
-        if cursor:
-            params["cursor"] = cursor
+        url = f"{POLYMARKET_GAMMA_API_URL}/markets/{market_id}"
+        self._wait_for_rate_limit()
+        response = self.client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        condition_id = data.get("conditionId")
+        if not condition_id:
+            raise ValueError(f"conditionId not found for market {market_id}")
+        return str(condition_id)
 
-        response = self._request("GET", "trades", params=params)
-        return response.json()
+    @beartype
+    def get_trades(
+        self,
+        condition_id: str,
+        limit: int = 500,
+        cursor: str | None = None,
+    ) -> list[dict[str, object]]:
+        """
+        Fetch trades for a specific market using conditionId via Data API.
+
+        Args:
+            condition_id: Market conditionId (not numeric ID)
+            limit: Maximum number of trades to fetch
+            cursor: Pagination cursor (not used by data-api, kept for compatibility)
+
+        Returns:
+            List of trade dictionaries (data-api returns array directly)
+
+        Raises:
+            HTTPError: If the API request fails
+        """
+        url = f"{POLYMARKET_DATA_API_URL}/trades"
+        params: dict[str, object] = {"market": condition_id, "limit": limit}
+        self._wait_for_rate_limit()
+        response = self.client.get(url, params=params)
+        response.raise_for_status()
+        trades = response.json()
+        # Data API returns array directly, not wrapped in object
+        if not isinstance(trades, list):
+            return []
+        return trades
 
     @beartype
     def get_market_info(self, market_id: str) -> dict[str, object]:

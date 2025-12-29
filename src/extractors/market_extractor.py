@@ -50,12 +50,21 @@ def extract_markets(
             if not isinstance(market_item, dict):
                 continue
 
-            # Gamma API uses "id" for market_id and "question" for name
-            market_id = market_item.get("id")
+            # Gamma API uses "conditionId" for Data API market_id and "question" for name
+            # If conditionId is present, use it directly. Otherwise use numeric "id" 
+            # (which will need to be converted to conditionId later via get_market_condition_id)
+            condition_id = market_item.get("conditionId")
+            numeric_id = market_item.get("id")
             market_name = market_item.get("question")
 
             # Validate required fields
-            if not market_id or not market_name:
+            if not market_name:
+                continue
+
+            # Prefer conditionId, but fallback to numeric id if needed
+            # (numeric id will be converted to conditionId in stage2_main when fetching trades)
+            market_id = condition_id if condition_id else numeric_id
+            if not market_id:
                 continue
 
             markets.append(Market(id=str(market_id), name=str(market_name)))

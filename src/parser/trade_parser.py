@@ -13,12 +13,13 @@ from src.parser.api_client import PolymarketAPIClient
 
 
 @beartype
-def parse_trade_data(trade: dict[str, object]) -> tuple[int, float, float, str, str] | None:
+def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, float, float, str, str] | None:
     """
     Parse a single trade from API response to database format.
 
     Args:
-        trade: Trade dictionary from API response
+        trade: Trade dictionary from Data API response
+        market_id: Market conditionId to associate with this trade
 
     Returns:
         Tuple of (timestamp, price, size, trader_address, market_id) or None if invalid
@@ -27,11 +28,11 @@ def parse_trade_data(trade: dict[str, object]) -> tuple[int, float, float, str, 
         timestamp = int(trade.get("timestamp", 0))
         price = float(trade.get("price", 0.0))
         size = float(trade.get("size", 0.0))
-        trader_address = str(trade.get("user", ""))
-        market_id = str(trade.get("market", ""))
+        # Data API uses "proxyWallet" instead of "user"
+        trader_address = str(trade.get("proxyWallet", ""))
 
         # Validate required fields
-        if not trader_address or not market_id or timestamp <= 0:
+        if not trader_address or timestamp <= 0:
             return None
 
         return (timestamp, price, size, trader_address, market_id)
@@ -41,15 +42,15 @@ def parse_trade_data(trade: dict[str, object]) -> tuple[int, float, float, str, 
 
 @beartype
 def fetch_trades(
-    market_id: str,
+    condition_id: str,
     limit: int = 500,
     api_client: PolymarketAPIClient | None = None,
 ) -> list[tuple[int, float, float, str, str]]:
     """
-    Fetch and parse trades from the Polymarket API.
+    Fetch and parse trades from the Polymarket Data API.
 
     Args:
-        market_id: Polymarket market ID
+        condition_id: Market conditionId (not numeric ID)
         limit: Maximum number of trades to fetch
         api_client: Optional API client (creates new if None)
 
@@ -61,18 +62,13 @@ def fetch_trades(
         api_client = PolymarketAPIClient()
 
     try:
-        # Fetch trades from API
-        response = api_client.get_trades(market_id, limit=limit)
-
-        # Extract trades from response
-        trades_data = response.get("data", [])
-        if not isinstance(trades_data, list):
-            trades_data = []
+        # Fetch trades from Data API (returns array directly)
+        trades_data = api_client.get_trades(condition_id, limit=limit)
 
         # Parse all trades
         parsed_trades: list[tuple[int, float, float, str, str]] = []
         for trade in trades_data:
-            parsed = parse_trade_data(trade)
+            parsed = parse_trade_data(trade, condition_id)
             if parsed:
                 parsed_trades.append(parsed)
 
@@ -84,21 +80,21 @@ def fetch_trades(
 
 @beartype
 def fetch_all_trades(
-    market_id: str,
+    condition_id: str,
     api_client: PolymarketAPIClient | None = None,
     limit_per_page: int = 500,
 ) -> list[tuple[int, float, float, str, str]]:
     """
-    Fetch ALL trades from Polymarket API using pagination.
+    Fetch ALL trades from Polymarket Data API.
 
-    This function automatically handles pagination to fetch all available trades,
-    not just the first page. Useful when you need to download all historical trades
-    for a market (e.g., when hashdive.com shows 500+ pages of trades).
+    Note: Data API doesn't support pagination with cursor, so this fetches all available
+    trades up to the limit. For full historical data, you may need to call this multiple
+    times or use a different approach.
 
     Args:
-        market_id: Polymarket market ID
+        condition_id: Market conditionId (not numeric ID)
         api_client: Optional API client (creates new if None)
-        limit_per_page: Number of trades to fetch per page (max 500)
+        limit_per_page: Number of trades to fetch (Data API may have its own limits)
 
     Returns:
         List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id)
@@ -108,47 +104,18 @@ def fetch_all_trades(
         api_client = PolymarketAPIClient()
 
     try:
-        all_trades: list[tuple[int, float, float, str, str]] = []
-        cursor: str | None = None
-        page = 1
+        # Data API returns array directly, pagination may not be supported
+        # Fetch with high limit to get as many trades as possible
+        trades_data = api_client.get_trades(condition_id, limit=limit_per_page)
 
-        while True:
-            # Fetch trades with pagination
-            response = api_client.get_trades(market_id, limit=limit_per_page, cursor=cursor)
+        # Parse all trades
+        parsed_trades: list[tuple[int, float, float, str, str]] = []
+        for trade in trades_data:
+            parsed = parse_trade_data(trade, condition_id)
+            if parsed:
+                parsed_trades.append(parsed)
 
-            # Extract trades from response
-            trades_data = response.get("data", [])
-            if not isinstance(trades_data, list):
-                trades_data = []
-
-            # Parse all trades from this page
-            parsed_trades: list[tuple[int, float, float, str, str]] = []
-            for trade in trades_data:
-                parsed = parse_trade_data(trade)
-                if parsed:
-                    parsed_trades.append(parsed)
-
-            all_trades.extend(parsed_trades)
-
-            # Check for next page cursor
-            next_cursor = response.get("cursor") or response.get("nextCursor")
-
-            # If no more trades, we're done
-            if not parsed_trades:
-                break
-
-            # If we got fewer trades than requested, this is the last page
-            if len(parsed_trades) < limit_per_page:
-                break
-
-            # If no cursor available, we're done
-            if not next_cursor:
-                break
-
-            cursor = str(next_cursor)
-            page += 1
-
-        return all_trades
+        return parsed_trades
     finally:
         if should_close:
             api_client.close()

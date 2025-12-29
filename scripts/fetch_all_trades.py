@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.database.connection import initialize_database
 from src.database.repository import get_trade_count, insert_trades_batch
 from src.parser.api_client import PolymarketAPIClient
-from src.parser.trade_parser import parse_trade_data
+from src.parser.trade_parser import fetch_all_trades
 
 
 @beartype
@@ -37,54 +37,22 @@ def main(market_id: str, save_to_db: bool = True) -> None:
         initialize_database()
         print("Database initialized.\n")
 
-    # Fetch all trades with progress output
+    # Get conditionId from numeric market_id if needed
     api_client = PolymarketAPIClient()
     try:
+        print("Getting conditionId...")
+        try:
+            condition_id = api_client.get_market_condition_id(market_id)
+            print(f"Got conditionId: {condition_id}\n")
+        except Exception as e:
+            # If get_market_condition_id fails, assume market_id is already a conditionId
+            print(f"Assuming market_id is conditionId (error: {e})\n")
+            condition_id = market_id
+
         print("Starting to fetch all trades (this may take a while)...\n")
         
-        # Manual pagination with progress output
-        all_trades: list[tuple[int, float, float, str, str]] = []
-        cursor: str | None = None
-        page = 1
-        
-        while True:
-            print(f"Fetching page {page}...", end=" ", flush=True)
-            
-            # Fetch trades with pagination
-            response = api_client.get_trades(market_id, limit=500, cursor=cursor)
-            
-            # Extract trades from response
-            trades_data = response.get("data", [])
-            if not isinstance(trades_data, list):
-                trades_data = []
-            
-            # Parse all trades from this page
-            parsed_trades: list[tuple[int, float, float, str, str]] = []
-            for trade in trades_data:
-                parsed = parse_trade_data(trade)
-                if parsed:
-                    parsed_trades.append(parsed)
-            
-            all_trades.extend(parsed_trades)
-            print(f"Got {len(parsed_trades)} trades (total: {len(all_trades)})")
-            
-            # Check for next page cursor
-            next_cursor = response.get("cursor") or response.get("nextCursor")
-            
-            # If no more trades, we're done
-            if not parsed_trades:
-                break
-            
-            # If we got fewer trades than requested, this is the last page
-            if len(parsed_trades) < 500:
-                break
-                
-            # If no cursor available, we're done
-            if not next_cursor:
-                break
-            
-            cursor = str(next_cursor)
-            page += 1
+        # Fetch all trades using the fetch_all_trades function
+        all_trades = fetch_all_trades(condition_id, api_client=api_client, limit_per_page=500)
 
         print("\n" + "=" * 60)
         print(f"✓ Successfully fetched {len(all_trades)} total trades")
@@ -100,9 +68,9 @@ def main(market_id: str, save_to_db: bool = True) -> None:
             inserted_count = insert_trades_batch(all_trades)
             print(f"✓ Successfully inserted {inserted_count} trades into database.")
 
-            # Verify
-            total_count = get_trade_count(market_id)
-            print(f"✓ Total trades in database for market {market_id}: {total_count}")
+            # Verify (use condition_id for DB query since that's what we stored)
+            total_count = get_trade_count(condition_id)
+            print(f"✓ Total trades in database for market {condition_id}: {total_count}")
 
         print("\n✓ Done!")
     except Exception as e:

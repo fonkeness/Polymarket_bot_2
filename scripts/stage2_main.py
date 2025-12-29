@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database.connection import initialize_database
 from src.database.repository import get_trade_count, insert_trades_batch
+from src.parser.api_client import PolymarketAPIClient
 from src.parser.trade_parser import fetch_trades
 from src.utils.config import INITIAL_TRADE_LIMIT
 
@@ -37,7 +38,19 @@ def main(market_id: str) -> None:
     # Fetch trades
     print(f"\nFetching up to {INITIAL_TRADE_LIMIT} trades from Polymarket API...")
     try:
-        trades = fetch_trades(market_id, limit=INITIAL_TRADE_LIMIT)
+        # Get conditionId from numeric market_id if needed
+        api_client = PolymarketAPIClient()
+        try:
+            condition_id = api_client.get_market_condition_id(market_id)
+            print(f"Got conditionId: {condition_id}")
+        except Exception as e:
+            # If get_market_condition_id fails, assume market_id is already a conditionId
+            print(f"Assuming market_id is conditionId (error getting conditionId: {e})")
+            condition_id = market_id
+        finally:
+            api_client.close()
+
+        trades = fetch_trades(condition_id, limit=INITIAL_TRADE_LIMIT)
         print(f"Fetched {len(trades)} trades from API.")
 
         if not trades:
@@ -49,9 +62,9 @@ def main(market_id: str) -> None:
         inserted_count = insert_trades_batch(trades)
         print(f"Successfully inserted {inserted_count} trades into database.")
 
-        # Verify
-        total_count = get_trade_count(market_id)
-        print(f"\nTotal trades in database for market {market_id}: {total_count}")
+        # Verify (use condition_id for DB query since that's what we stored)
+        total_count = get_trade_count(condition_id)
+        print(f"\nTotal trades in database for market {condition_id}: {total_count}")
 
         print("\nStage 2 completed successfully!")
     except Exception as e:
