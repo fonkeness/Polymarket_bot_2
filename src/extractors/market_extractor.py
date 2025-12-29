@@ -18,14 +18,14 @@ def extract_markets(
     Extract all markets from a Polymarket event URL.
 
     Args:
-        event_url: Polymarket event URL with tid parameter (e.g., https://polymarket.com/event/event-slug?tid=12345)
+        event_url: Polymarket event URL (e.g., https://polymarket.com/event/event-slug?tid=12345)
         api_client: Optional API client (creates new if None)
 
     Returns:
         List of Market objects containing market ID and name
 
     Raises:
-        ValueError: If the URL format is invalid or doesn't contain tid parameter
+        ValueError: If the URL format is invalid
         HTTPError: If the API request fails
     """
     should_close = api_client is None
@@ -33,14 +33,14 @@ def extract_markets(
         api_client = PolymarketAPIClient()
 
     try:
-        # Parse URL to get event ID (tid from query parameter)
-        event_id = parse_event_url(event_url)
+        # Parse URL to get event slug
+        event_slug = parse_event_url(event_url)
 
-        # Query API for markets using event_id
-        response = api_client.get_event_markets(event_id)
+        # Query Gamma API for markets
+        response = api_client.get_event_markets(event_slug)
 
-        # Parse response to extract market data
-        markets_data = response.get("data", [])
+        # Parse response - Gamma API returns markets in "markets" field
+        markets_data = response.get("markets", [])
         if not isinstance(markets_data, list):
             markets_data = []
 
@@ -50,22 +50,15 @@ def extract_markets(
             if not isinstance(market_item, dict):
                 continue
 
-            market_id = market_item.get("id") or market_item.get("market_id")
-            market_name = market_item.get("name") or market_item.get("title") or market_item.get("question")
+            # Gamma API uses "id" for market_id and "question" for name
+            market_id = market_item.get("id")
+            market_name = market_item.get("question")
 
             # Validate required fields
             if not market_id or not market_name:
                 continue
 
-            # Ensure both are strings
-            try:
-                market_id_str = str(market_id)
-                market_name_str = str(market_name)
-            except (TypeError, ValueError):
-                continue
-
-            if market_id_str and market_name_str:
-                markets.append(Market(id=market_id_str, name=market_name_str))
+            markets.append(Market(id=str(market_id), name=str(market_name)))
 
         return markets
     finally:

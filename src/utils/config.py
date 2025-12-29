@@ -13,6 +13,7 @@ DB_PATH = DB_DIR / "trades.db"
 # API configuration
 POLYMARKET_API_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_API_V1_URL = f"{POLYMARKET_API_BASE_URL}/v1"
+POLYMARKET_GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
 # Trade fetching limits
 INITIAL_TRADE_LIMIT = 500

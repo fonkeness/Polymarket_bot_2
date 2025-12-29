@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from beartype import beartype
 from httpx import Client, HTTPError, Response
 
-from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL
+from src.utils.config import API_RATE_LIMIT, POLYMARKET_API_V1_URL, POLYMARKET_GAMMA_API_URL
 
 
 class PolymarketAPIClient:
@@ -115,12 +115,12 @@ class PolymarketAPIClient:
         return response.json()
 
     @beartype
-    def get_event_markets(self, event_id: str) -> dict[str, object]:
+    def get_event_markets(self, event_slug: str) -> dict[str, object]:
         """
-        Fetch all markets for a specific event.
+        Fetch all markets for a specific event using Gamma API.
 
         Args:
-            event_id: Polymarket event ID (tid from URL query parameter)
+            event_slug: Polymarket event slug (e.g., "fed-decision-in-january")
 
         Returns:
             API response containing market data as a dictionary
@@ -128,8 +128,11 @@ class PolymarketAPIClient:
         Raises:
             HTTPError: If the API request fails
         """
-        params: dict[str, object] = {"event": event_id}
-        response = self._request("GET", "markets", params=params)
+        # Use Gamma API endpoint: /events/slug/{slug}
+        url = f"{POLYMARKET_GAMMA_API_URL}/events/slug/{event_slug}"
+        self._wait_for_rate_limit()
+        response = self.client.get(url)
+        response.raise_for_status()
         return response.json()
 
     def close(self) -> None:
