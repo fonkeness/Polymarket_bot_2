@@ -167,19 +167,21 @@ class PolymarketAPIClient:
         
         result = response.json()
         
+        # Log full response for debugging
+        if "errors" in result:
+            print(f"DEBUG: Full API response: {result}")
+            error_msg = "; ".join(str(err) for err in result["errors"])
+            raise HTTPError(f"The Graph API error: {error_msg}")
+        
         # The Graph returns data in {"data": {"trades": [...]}} format
         # Check if data exists and is not None before checking for trades
         if "data" in result and result["data"] is not None and "trades" in result["data"]:
             return result["data"]["trades"]
         
-        # Check for errors
-        if "errors" in result:
-            error_msg = "; ".join(str(err) for err in result["errors"])
-            raise HTTPError(f"The Graph API error: {error_msg}")
-        
         # Log unexpected response format for debugging
+        print(f"DEBUG: Unexpected response format. Full response: {result}")
         if "data" in result and result["data"] is None:
-            print(f"Warning: The Graph API returned data=null for market {condition_id}. Response: {result}")
+            print(f"Warning: The Graph API returned data=null for market {condition_id}.")
         
         return []
 
@@ -372,19 +374,21 @@ class AsyncPolymarketAPIClient:
         
         result = response.json()
         
+        # Log full response for debugging
+        if "errors" in result:
+            print(f"DEBUG: Full API response: {result}")
+            error_msg = "; ".join(str(err) for err in result["errors"])
+            raise HTTPError(f"The Graph API error: {error_msg}")
+        
         # The Graph returns data in {"data": {"trades": [...]}} format
         # Check if data exists and is not None before checking for trades
         if "data" in result and result["data"] is not None and "trades" in result["data"]:
             return result["data"]["trades"]
         
-        # Check for errors
-        if "errors" in result:
-            error_msg = "; ".join(str(err) for err in result["errors"])
-            raise HTTPError(f"The Graph API error: {error_msg}")
-        
         # Log unexpected response format for debugging
+        print(f"DEBUG: Unexpected response format. Full response: {result}")
         if "data" in result and result["data"] is None:
-            print(f"Warning: The Graph API returned data=null for market {condition_id}. Response: {result}")
+            print(f"Warning: The Graph API returned data=null for market {condition_id}.")
         
         return []
 
