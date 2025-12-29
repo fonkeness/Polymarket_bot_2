@@ -166,22 +166,21 @@ async def async_fetch_trades_by_date_range(
     start_timestamp: int,
     end_timestamp: int,
     api_client: AsyncPolymarketAPIClient,
-    max_offset: int = 1000,  # Stop before offset bug kicks in
+    max_offset: int = 50000,  # Increased to handle old dates
 ) -> list[dict[str, object]]:
     """
     Fetch trades for a specific date range using offset pagination with client-side filtering.
     
-    This function works around the API offset bug by:
-    - Using small offset increments (0, 500, 1000...)
-    - Filtering trades by timestamp on client side
-    - Stopping before offset bug kicks in (~1000-1500)
+    This function continues fetching with increasing offsets until it finds trades
+    in the target date range or passes beyond it. This is necessary because API
+    returns trades sorted from newest to oldest, so old dates require high offsets.
     
     Args:
         condition_id: Market conditionId
         start_timestamp: Start of date range (inclusive)
         end_timestamp: End of date range (exclusive)
         api_client: Async API client
-        max_offset: Maximum offset to use before stopping (to avoid offset bug)
+        max_offset: Maximum offset to use (increased to handle old dates)
     
     Returns:
         List of trade dictionaries within the date range
@@ -189,11 +188,11 @@ async def async_fetch_trades_by_date_range(
     all_trades: list[dict[str, object]] = []
     offset = 0
     limit = 500
-    max_iterations = 10  # Safety limit
+    max_iterations = 200  # Increased for old dates
+    consecutive_empty_ranges = 0  # Counter for empty batches in a row
     
     for _ in range(max_iterations):
         if offset >= max_offset:
-            # Stop before offset bug kicks in
             break
         
         # Fetch trades batch
@@ -202,52 +201,52 @@ async def async_fetch_trades_by_date_range(
         )
         
         if not trades_data:
+            # Empty response - no more trades
             break
         
         # Filter trades by timestamp (client-side filtering)
         trades_in_range: list[dict[str, object]] = []
         oldest_timestamp = None
+        newest_timestamp = None
         
         for trade in trades_data:
             trade_ts = trade.get("timestamp", 0)
             if not trade_ts:
                 continue
             
+            # Track timestamps
+            if oldest_timestamp is None or trade_ts < oldest_timestamp:
+                oldest_timestamp = trade_ts
+            if newest_timestamp is None or trade_ts > newest_timestamp:
+                newest_timestamp = trade_ts
+            
             # Check if trade is in date range
             if start_timestamp <= trade_ts < end_timestamp:
                 trades_in_range.append(trade)
-            
-            # Track oldest timestamp for stopping condition
-            if oldest_timestamp is None or trade_ts < oldest_timestamp:
-                oldest_timestamp = trade_ts
         
-        all_trades.extend(trades_in_range)
+        # If found trades in range - add them
+        if trades_in_range:
+            all_trades.extend(trades_in_range)
+            consecutive_empty_ranges = 0  # Reset counter
+        else:
+            consecutive_empty_ranges += 1
         
         # Stop conditions:
         # 1. Got fewer trades than requested (last page)
         if len(trades_data) < limit:
             break
         
-        # 2. Check if we've passed the date range
-        if oldest_timestamp is not None:
-            # If oldest trade is older than start_timestamp, we've gone too far back
-            if oldest_timestamp < start_timestamp:
+        # 2. If oldest trade in batch is older than start_timestamp - we've passed the range
+        if oldest_timestamp is not None and oldest_timestamp < start_timestamp:
+            # Check: maybe we haven't reached the range yet?
+            # If newest trade is also older than start_timestamp, we've passed the entire range
+            if newest_timestamp is not None and newest_timestamp < start_timestamp:
                 break
-            
-            # If oldest trade is newer than end_timestamp, all trades are too new
-            # But since API returns newest first, we should continue to get older trades
-            # So we only stop if we're getting trades that are all too new AND we got a full batch
-            # Actually, wait - if oldest_timestamp >= end_timestamp, we're getting trades
-            # that are all newer than our range. But since offset gives us older trades,
-            # we should continue. However, if we got a full batch and none are in range,
-            # and oldest is still >= end_timestamp, something is wrong.
-            # Actually, let's keep it simple: if oldest < start, we've passed the range.
         
-        # 3. No trades in range and we got full batch - might be past the range
-        # Check if oldest timestamp indicates we've passed the range
-        if not trades_in_range and len(trades_data) == limit and oldest_timestamp is not None:
+        # 3. If several batches in a row don't contain trades in range and we've passed the range
+        if consecutive_empty_ranges >= 3 and oldest_timestamp is not None:
             if oldest_timestamp < start_timestamp:
-                # All trades are older than our range - we've passed it
+                # We've passed the needed range and several batches in a row are empty
                 break
         
         # Move to next offset
