@@ -12,6 +12,7 @@ from httpx import AsyncClient, Client, HTTPError, Response
 from src.utils.config import (
     API_RATE_LIMIT,
     POLYMARKET_API_V1_URL,
+    POLYMARKET_DATA_API_URL,
     POLYMARKET_GAMMA_API_URL,
     THE_GRAPH_API_URL,
 )
@@ -515,10 +516,77 @@ class AsyncPolymarketAPIClient:
                 await asyncio.sleep(wait_time)
                 last_error = str(e)
         
-        # If we get here, all retries failed
-        if last_error:
-            raise HTTPError(f"The Graph API error after {max_retries} attempts: {last_error}")
-        return []
+        # If we get here, all retries failed - try REST API fallback
+        print(f"Warning: The Graph API failed after {max_retries} attempts.")
+        print(f"Attempting fallback to Polymarket REST API...")
+        return await self._get_trades_via_rest_api(condition_id, limit, offset)
+
+    async def _get_trades_via_rest_api(
+        self,
+        condition_id: str,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        """
+        Fallback method to fetch trades via Polymarket REST API.
+        
+        Args:
+            condition_id: Market conditionId
+            limit: Maximum number of trades to fetch
+            offset: Number of trades to skip
+            
+        Returns:
+            List of trade dictionaries in The Graph format
+        """
+        try:
+            url = f"{POLYMARKET_DATA_API_URL}/trades"
+            params = {
+                "conditionId": condition_id,
+                "limit": limit,
+                "offset": offset,
+            }
+            
+            await self._wait_for_rate_limit()
+            response = await self.client.get(url, params=params)
+            response.raise_for_status()
+            
+            trades_data = response.json()
+            
+            # REST API returns list directly or wrapped in data field
+            if isinstance(trades_data, dict) and "data" in trades_data:
+                trades_data = trades_data["data"]
+            
+            if not isinstance(trades_data, list):
+                print(f"Warning: REST API returned unexpected format: {type(trades_data)}")
+                return []
+            
+            # Convert REST API format to The Graph format
+            converted_trades = []
+            for trade in trades_data:
+                # REST API format: {proxyWallet, side, asset, conditionId, size, price, timestamp, ...}
+                # The Graph format: {id, market: {id}, outcomeIndex, price, amount, timestamp, user: {id}, side}
+                converted_trade = {
+                    "id": trade.get("id") or f"{trade.get('timestamp', 0)}_{trade.get('proxyWallet', '')}",
+                    "market": {
+                        "id": trade.get("conditionId") or condition_id,
+                    },
+                    "outcomeIndex": trade.get("outcomeIndex") or 0,
+                    "price": float(trade.get("price", 0.0)),
+                    "amount": float(trade.get("size", trade.get("amount", 0.0))),
+                    "timestamp": int(trade.get("timestamp", 0)),
+                    "user": {
+                        "id": trade.get("proxyWallet") or trade.get("user", ""),
+                    },
+                    "side": trade.get("side", "").lower() or "unknown",
+                }
+                converted_trades.append(converted_trade)
+            
+            print(f"✓ Successfully fetched {len(converted_trades)} trades via REST API fallback")
+            return converted_trades
+            
+        except Exception as e:
+            print(f"Error: REST API fallback also failed: {e}")
+            return []
 
     async def close(self) -> None:
         """Close the HTTP client."""
