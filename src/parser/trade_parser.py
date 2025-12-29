@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from beartype import beartype
@@ -85,7 +86,7 @@ async def async_fetch_all_trades(
     api_client: AsyncPolymarketAPIClient | None = None,
     limit_per_page: int = 1000,
     save_to_db: bool = True,
-    progress_callback: ((int, int) -> None) | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> int:
     """
     Fetch ALL trades from Polymarket Data API using async and offset pagination.
