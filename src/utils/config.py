@@ -15,18 +15,30 @@ POLYMARKET_API_V1_URL = f"{POLYMARKET_API_BASE_URL}/v1"
 POLYMARKET_GAMMA_API_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_DATA_API_URL = "https://data-api.polymarket.com"
 
-# The Graph API configuration
-THE_GRAPH_API_KEY = "839805a5fb864b40b2fa49bca0a4c38d"
-THE_GRAPH_SUBGRAPH_ID = "Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp"
-THE_GRAPH_API_URL = f"https://gateway.thegraph.com/api/{THE_GRAPH_API_KEY}/subgraphs/id/{THE_GRAPH_SUBGRAPH_ID}"
-
 # Trade fetching limits
 INITIAL_TRADE_LIMIT = 500
 
 # API rate limiting (requests per second)
 API_RATE_LIMIT = 10.0  # Conservative default
 
-# Async configuration
-ASYNC_CONCURRENT_REQUESTS = 5  # Number of parallel requests
-ASYNC_BATCH_SIZE = 1000  # Batch size for DB saving
+# Blockchain configuration
+# Polygon mainnet RPC endpoints (public, with fallback)
+POLYGON_RPC_ENDPOINTS = [
+    "https://polygon-rpc.com",  # Public RPC
+    "https://rpc.ankr.com/polygon",  # Ankr public RPC
+    "https://polygon.llamarpc.com",  # LlamaRPC public endpoint
+]
+
+# Polymarket CLOB contract address (will be determined via contract finder)
+POLYMARKET_CLOB_CONTRACT_ADDRESS: str | None = None
+
+# Blockchain batch processing settings
+BLOCKCHAIN_BATCH_SIZE = 1000  # Number of blocks per batch
+BLOCKCHAIN_MAX_WORKERS = 5  # Maximum concurrent workers for block processing
+BLOCKCHAIN_RPC_RATE_LIMIT = 10.0  # Requests per second to RPC
+BLOCKCHAIN_RETRY_ATTEMPTS = 3  # Number of retry attempts for failed requests
+BLOCKCHAIN_RETRY_DELAY = 2.0  # Initial delay between retries (seconds)
+
+# Database batch insert size
+DB_BATCH_INSERT_SIZE = 1000  # Number of trades to insert per batch
 
