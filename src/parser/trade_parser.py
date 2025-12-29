@@ -112,11 +112,13 @@ async def async_fetch_all_trades(
     try:
         total_loaded = 0
         offset = 0
+        # Use 500 as limit since Data API may have a maximum limit
+        effective_limit = min(limit_per_page, 500)
 
         while True:
             # Fetch trades batch
             trades_data = await api_client.get_trades(
-                condition_id, limit=limit_per_page, offset=offset
+                condition_id, limit=effective_limit, offset=offset
             )
 
             if not trades_data:
@@ -145,16 +147,17 @@ async def async_fetch_all_trades(
             if progress_callback:
                 # Estimate total (might be inaccurate, but gives user feedback)
                 estimated_total = (
-                    total_loaded + limit_per_page if len(trades_data) == limit_per_page else total_loaded
+                    total_loaded + effective_limit if len(trades_data) == effective_limit else total_loaded
                 )
                 progress_callback(total_loaded, estimated_total)
 
             # Check if we got fewer trades than requested (last page)
-            if len(trades_data) < limit_per_page:
+            if len(trades_data) < effective_limit:
                 break
 
             # Move to next page
-            offset += limit_per_page
+            # Use len(trades_data) to handle cases where API returns fewer than requested
+            offset += len(trades_data)
 
         return total_loaded
     finally:

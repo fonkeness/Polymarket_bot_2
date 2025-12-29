@@ -58,10 +58,11 @@ async def async_main(market_id: str, save_to_db: bool = True) -> None:
         print("Starting to fetch all trades (this may take a while)...\n")
 
         # Fetch all trades using async function with real-time saving
+        # Use 500 as limit since Data API may have maximum limit of 500 per request
         total_loaded = await async_fetch_all_trades(
             condition_id,
             api_client=api_client,
-            limit_per_page=1000,
+            limit_per_page=500,
             save_to_db=save_to_db,
             progress_callback=progress_callback,
         )

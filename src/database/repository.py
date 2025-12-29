@@ -75,7 +75,7 @@ def insert_trades_batch(
         cursor = conn.cursor()
         cursor.executemany(
             """
-            INSERT INTO trades (timestamp, price, size, trader_address, market_id)
+            INSERT OR IGNORE INTO trades (timestamp, price, size, trader_address, market_id)
             VALUES (?, ?, ?, ?, ?)
             """,
             trades,
@@ -121,7 +121,7 @@ def get_trades_by_market(market_id: str, limit: int | None = None) -> list[dict[
         limit: Optional limit on number of trades to return
 
     Returns:
-        List of trade dictionaries
+        List of trade dictionaries with keys: id, timestamp, price, size, trader_address, market_id, created_at
     """
     conn = get_connection()
     try:
@@ -131,6 +131,7 @@ def get_trades_by_market(market_id: str, limit: int | None = None) -> list[dict[
             query += f" LIMIT {limit}"
         cursor.execute(query, (market_id,))
         rows = cursor.fetchall()
+        # Convert Row objects to dicts (row_factory is set to Row in connection.py)
         return [dict(row) for row in rows]
     finally:
         conn.close()

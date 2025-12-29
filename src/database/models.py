@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 # SQL schema for trades table
+# Note: We use INSERT OR IGNORE in repository.py to prevent duplicates
+# Adding UNIQUE constraint would break existing databases, so we skip it
 TRADES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
