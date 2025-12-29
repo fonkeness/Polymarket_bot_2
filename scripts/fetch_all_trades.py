@@ -150,6 +150,21 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
         if save_to_db:
             total_count = get_trade_count(condition_id)
             print(f"✓ Total unique trades in database for market {condition_id}: {total_count:,}")
+            
+            # Calculate total volume (sum of all sizes)
+            from src.database.connection import get_connection
+            db_conn_stats = get_connection()
+            try:
+                cursor = db_conn_stats.cursor()
+                cursor.execute(
+                    "SELECT SUM(size) FROM trades WHERE market_id = ?",
+                    (condition_id,)
+                )
+                result = cursor.fetchone()
+                total_volume = result[0] if result and result[0] is not None else 0.0
+                print(f"✓ Total volume: {total_volume:,.2f}")
+            finally:
+                db_conn_stats.close()
 
         # Calculate final statistics
         if _start_time:

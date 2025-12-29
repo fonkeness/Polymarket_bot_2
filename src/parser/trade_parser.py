@@ -152,6 +152,7 @@ async def async_fetch_all_trades(
 
     # Load existing trades from DB ONCE at start
     existing_signatures = set()
+    min_timestamp_in_db = None  # Запомнить минимальный timestamp из БД
     if save_to_db:
         db_conn_read = get_connection()
         try:
@@ -165,7 +166,19 @@ async def async_fetch_all_trades(
                 (condition_id,),
             )
             existing_signatures = set(row[0] for row in cursor.fetchall())
+            
+            # Получить минимальный timestamp отдельным запросом
+            cursor.execute(
+                "SELECT MIN(timestamp) FROM trades WHERE market_id = ?",
+                (condition_id,),
+            )
+            min_result = cursor.fetchone()
+            min_timestamp_in_db = min_result[0] if min_result and min_result[0] else None
+            
             print(f"✓ Loaded {len(existing_signatures):,} existing unique trades for filtering")
+            if min_timestamp_in_db:
+                from datetime import datetime
+                print(f"✓ Oldest trade in DB: {datetime.fromtimestamp(min_timestamp_in_db).strftime('%Y-%m-%d %H:%M:%S')}")
         finally:
             db_conn_read.close()
 
@@ -186,9 +199,10 @@ async def async_fetch_all_trades(
         # Infinite loop protection
         last_batch_signatures = None
         duplicate_batch_count = 0
-        max_duplicate_batches = 3
+        max_duplicate_batches = 5  # Увеличено с 3 до 5
         iterations = 0
-        max_iterations = max_trades // effective_limit + 100
+        # Увеличить max_iterations - добавить больше запасных итераций
+        max_iterations = (max_trades // effective_limit) * 3 + 2000  # Увеличено в 3 раза + большой запас
 
         # Buffer for batching DB operations
         batch_buffer: list[tuple[int, float, float, str, str, str]] = []
@@ -236,11 +250,31 @@ async def async_fetch_all_trades(
                     total_skipped += 1  # Count skipped duplicates
 
             # Protection 3: Check if we got the same data as last time
-            if current_batch_signatures == last_batch_signatures:
+            # ИСПРАВЛЕНИЕ: Не считать пустые батчи как дубликаты
+            # Пустой батч = все трейды были дубликатами, но это не значит что мы достигли конца
+            if current_batch_signatures and last_batch_signatures and current_batch_signatures == last_batch_signatures:
                 duplicate_batch_count += 1
                 if duplicate_batch_count >= max_duplicate_batches:
-                    print(f"\n⚠️  Stopping: Got duplicate batches {max_duplicate_batches} times in a row.")
-                    break
+                    # Проверить timestamp - может быть мы действительно достигли конца?
+                    if trades_data:
+                        timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
+                        if timestamps:
+                            oldest_timestamp = min(timestamps)
+                            from datetime import datetime
+                            oldest_date = datetime.fromtimestamp(oldest_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"\n⚠️  Stopping: Got duplicate batches {max_duplicate_batches} times in a row.")
+                            print(f"  Last trade timestamp: {oldest_date}")
+                            
+                            # Если timestamp очень старый (раньше чем в БД), возможно это действительно конец
+                            if min_timestamp_in_db and oldest_timestamp >= min_timestamp_in_db:
+                                print(f"  Note: Timestamp is newer than oldest in DB. May have reached end of available data.")
+                            break
+                    else:
+                        print(f"\n⚠️  Stopping: Got duplicate batches {max_duplicate_batches} times in a row.")
+                        break
+            elif not current_batch_signatures and not last_batch_signatures:
+                # Оба батча пустые (все дубликаты) - это нормально, продолжаем
+                duplicate_batch_count = 0
             else:
                 duplicate_batch_count = 0
 
@@ -258,6 +292,18 @@ async def async_fetch_all_trades(
                 if len(trades_data) < effective_limit:
                     print(f"\n✓ No new trades and got fewer than requested. Finished.")
                     break
+                # ИСПРАВЛЕНИЕ: Если получили полный батч, но все дубликаты - это нормально
+                # Продолжаем загрузку, так как могут быть новые трейды дальше
+                # НО: если offset очень большой и много дубликатов подряд, возможно достигли конца
+                if offset > 500000 and duplicate_batch_count >= 5:
+                    print(f"\n⚠️  Large offset ({offset:,}) with many duplicate batches. May have reached end.")
+                    # Проверить timestamp
+                    if trades_data:
+                        timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
+                        if timestamps:
+                            oldest_timestamp = min(timestamps)
+                            if min_timestamp_in_db and oldest_timestamp > min_timestamp_in_db + 86400:
+                                print(f"  But timestamps suggest more data may exist. Continuing...")
                 # If got full batch but all duplicates - continue
                 offset += len(trades_data)
                 continue
@@ -305,6 +351,18 @@ async def async_fetch_all_trades(
             # Protection 4: Check that offset increased
             if offset % (effective_limit * 100) == 0 and offset > 0:
                 print(f"\n[Debug] Offset: {offset:,}, Loaded: {total_loaded:,}, New in batch: {len(parsed_trades)}")
+            
+            # НОВОЕ: Проверить timestamp батча для отладки
+            if trades_data and iterations % 20 == 0:  # Каждые 20 итераций
+                timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
+                if timestamps:
+                    oldest_in_batch = min(timestamps)
+                    newest_in_batch = max(timestamps)
+                    from datetime import datetime
+                    print(f"\n[Debug] Batch timestamps: {datetime.fromtimestamp(newest_in_batch).strftime('%Y-%m-%d %H:%M:%S')} to {datetime.fromtimestamp(oldest_in_batch).strftime('%Y-%m-%d %H:%M:%S')}")
+                    if min_timestamp_in_db:
+                        if oldest_in_batch < min_timestamp_in_db:
+                            print(f"  ✓ Progress: Getting older trades (older than DB minimum)")
 
         # Save remaining buffer
         if batch_buffer:
@@ -327,6 +385,21 @@ async def async_fetch_all_trades(
         print(f"  ✓ New trades loaded: {total_loaded:,}")
         print(f"  ✓ Duplicates skipped: {total_skipped:,}")
         print(f"  ✓ Efficiency: {efficiency:.1f}% unique")
+        
+        # Calculate total volume for this market if saving to DB
+        if save_to_db and db_conn:
+            try:
+                cursor = db_conn.cursor()
+                cursor.execute(
+                    "SELECT SUM(size) FROM trades WHERE market_id = ?",
+                    (condition_id,)
+                )
+                result = cursor.fetchone()
+                total_volume = result[0] if result and result[0] is not None else 0.0
+                print(f"  ✓ Total volume in database: {total_volume:,.2f}")
+            except Exception:
+                # Don't fail if volume calculation fails
+                pass
 
         return total_loaded
     finally:
