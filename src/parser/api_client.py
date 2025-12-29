@@ -106,21 +106,24 @@ class PolymarketAPIClient:
         limit: int = 500,
         cursor: str | None = None,
         skip: int = 0,
+        max_retries: int = 3,
     ) -> list[dict[str, object]]:
         """
         Fetch trades for a specific market using conditionId via The Graph API.
+        Includes retry logic for indexer errors.
 
         Args:
             condition_id: Market conditionId (not numeric ID)
             limit: Maximum number of trades to fetch
             cursor: Pagination cursor (not used, kept for compatibility)
             skip: Number of trades to skip (for pagination)
+            max_retries: Maximum number of retry attempts for indexer errors
 
         Returns:
             List of trade dictionaries from The Graph API
 
         Raises:
-            HTTPError: If the API request fails
+            HTTPError: If the API request fails after all retries
         """
         # GraphQL query to fetch trades for a specific market
         graphql_query = """
@@ -161,28 +164,64 @@ class PolymarketAPIClient:
         
         headers = {"Content-Type": "application/json"}
         
-        self._wait_for_rate_limit()
-        response = self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
+        # Retry logic for indexer errors
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                self._wait_for_rate_limit()
+                response = self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # Check for errors in response
+                if "errors" in result:
+                    error_msg = "; ".join(str(err) for err in result["errors"])
+                    error_str = str(error_msg).lower()
+                    
+                    # Check if it's an indexer error (retryable)
+                    if "bad indexers" in error_str or "unavailable" in error_str or "too far behind" in error_str:
+                        if attempt < max_retries - 1:
+                            # Exponential backoff: 2^attempt seconds
+                            wait_time = 2 ** attempt
+                            print(f"Warning: The Graph indexer error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                            time.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            print(f"Error: The Graph indexer unavailable after {max_retries} attempts. Returning empty list.")
+                            print(f"DEBUG: Full API response: {result}")
+                            return []  # Return empty list instead of raising error
+                    else:
+                        # Non-retryable error
+                        print(f"DEBUG: Full API response: {result}")
+                        raise HTTPError(f"The Graph API error: {error_msg}")
+                
+                # The Graph returns data in {"data": {"trades": [...]}} format
+                # Check if data exists and is not None before checking for trades
+                if "data" in result and result["data"] is not None and "trades" in result["data"]:
+                    return result["data"]["trades"]
+                
+                # Log unexpected response format for debugging
+                print(f"DEBUG: Unexpected response format. Full response: {result}")
+                if "data" in result and result["data"] is None:
+                    print(f"Warning: The Graph API returned data=null for market {condition_id}.")
+                
+                return []
+                
+            except HTTPError as e:
+                # If it's the last attempt, raise the error
+                if attempt == max_retries - 1:
+                    raise
+                # Otherwise, retry with exponential backoff
+                wait_time = 2 ** attempt
+                print(f"Warning: HTTP error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                last_error = str(e)
         
-        result = response.json()
-        
-        # Log full response for debugging
-        if "errors" in result:
-            print(f"DEBUG: Full API response: {result}")
-            error_msg = "; ".join(str(err) for err in result["errors"])
-            raise HTTPError(f"The Graph API error: {error_msg}")
-        
-        # The Graph returns data in {"data": {"trades": [...]}} format
-        # Check if data exists and is not None before checking for trades
-        if "data" in result and result["data"] is not None and "trades" in result["data"]:
-            return result["data"]["trades"]
-        
-        # Log unexpected response format for debugging
-        print(f"DEBUG: Unexpected response format. Full response: {result}")
-        if "data" in result and result["data"] is None:
-            print(f"Warning: The Graph API returned data=null for market {condition_id}.")
-        
+        # If we get here, all retries failed
+        if last_error:
+            raise HTTPError(f"The Graph API error after {max_retries} attempts: {last_error}")
         return []
 
     @beartype
@@ -314,20 +353,23 @@ class AsyncPolymarketAPIClient:
         condition_id: str,
         limit: int = 500,
         offset: int = 0,
+        max_retries: int = 3,
     ) -> list[dict[str, object]]:
         """
         Fetch trades for a specific market using conditionId via The Graph API with skip pagination.
+        Includes retry logic for indexer errors.
 
         Args:
             condition_id: Market conditionId (not numeric ID)
             limit: Maximum number of trades to fetch per page
             offset: Number of trades to skip (for pagination)
+            max_retries: Maximum number of retry attempts for indexer errors
 
         Returns:
             List of trade dictionaries from The Graph API
 
         Raises:
-            HTTPError: If the API request fails
+            HTTPError: If the API request fails after all retries
         """
         # GraphQL query to fetch trades for a specific market
         graphql_query = """
@@ -368,28 +410,64 @@ class AsyncPolymarketAPIClient:
         
         headers = {"Content-Type": "application/json"}
         
-        await self._wait_for_rate_limit()
-        response = await self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
+        # Retry logic for indexer errors
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                await self._wait_for_rate_limit()
+                response = await self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # Check for errors in response
+                if "errors" in result:
+                    error_msg = "; ".join(str(err) for err in result["errors"])
+                    error_str = str(error_msg).lower()
+                    
+                    # Check if it's an indexer error (retryable)
+                    if "bad indexers" in error_str or "unavailable" in error_str or "too far behind" in error_str:
+                        if attempt < max_retries - 1:
+                            # Exponential backoff: 2^attempt seconds
+                            wait_time = 2 ** attempt
+                            print(f"Warning: The Graph indexer error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                            last_error = error_msg
+                            continue
+                        else:
+                            print(f"Error: The Graph indexer unavailable after {max_retries} attempts. Returning empty list.")
+                            print(f"DEBUG: Full API response: {result}")
+                            return []  # Return empty list instead of raising error
+                    else:
+                        # Non-retryable error
+                        print(f"DEBUG: Full API response: {result}")
+                        raise HTTPError(f"The Graph API error: {error_msg}")
+                
+                # The Graph returns data in {"data": {"trades": [...]}} format
+                # Check if data exists and is not None before checking for trades
+                if "data" in result and result["data"] is not None and "trades" in result["data"]:
+                    return result["data"]["trades"]
+                
+                # Log unexpected response format for debugging
+                print(f"DEBUG: Unexpected response format. Full response: {result}")
+                if "data" in result and result["data"] is None:
+                    print(f"Warning: The Graph API returned data=null for market {condition_id}.")
+                
+                return []
+                
+            except HTTPError as e:
+                # If it's the last attempt, raise the error
+                if attempt == max_retries - 1:
+                    raise
+                # Otherwise, retry with exponential backoff
+                wait_time = 2 ** attempt
+                print(f"Warning: HTTP error (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                last_error = str(e)
         
-        result = response.json()
-        
-        # Log full response for debugging
-        if "errors" in result:
-            print(f"DEBUG: Full API response: {result}")
-            error_msg = "; ".join(str(err) for err in result["errors"])
-            raise HTTPError(f"The Graph API error: {error_msg}")
-        
-        # The Graph returns data in {"data": {"trades": [...]}} format
-        # Check if data exists and is not None before checking for trades
-        if "data" in result and result["data"] is not None and "trades" in result["data"]:
-            return result["data"]["trades"]
-        
-        # Log unexpected response format for debugging
-        print(f"DEBUG: Unexpected response format. Full response: {result}")
-        if "data" in result and result["data"] is None:
-            print(f"Warning: The Graph API returned data=null for market {condition_id}.")
-        
+        # If we get here, all retries failed
+        if last_error:
+            raise HTTPError(f"The Graph API error after {max_retries} attempts: {last_error}")
         return []
 
     async def close(self) -> None:
