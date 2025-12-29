@@ -12,3 +12,4 @@ class Market:
     id: str
     name: str
 
+

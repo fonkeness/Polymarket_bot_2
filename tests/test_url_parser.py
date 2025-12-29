@@ -94,3 +94,4 @@ def test_parse_event_url_complex_slug() -> None:
     result = parse_event_url(url)
     assert result == "event-2024-slug-name-123"
 
+

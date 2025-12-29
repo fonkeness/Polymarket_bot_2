@@ -186,3 +186,4 @@ def test_extract_markets_non_list_data() -> None:
 
         assert len(markets) == 0
 
+
