@@ -135,10 +135,12 @@ async def test_4_total_available_trades():
                 f"Unique signatures: {len(all_signatures):>6}"
             )
             
+            # Capture offset before incrementing for accurate error messages
+            current_offset = offset
             offset += len(trades)
             
             if len(trades) < 500:
-                print(f"\nStopped at offset {offset}: Got fewer than requested ({len(trades)} < 500)")
+                print(f"\nStopped at offset {current_offset}: Got fewer than requested ({len(trades)} < 500)")
                 break
             
             # Stop if we're getting too many duplicates
