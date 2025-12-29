@@ -70,7 +70,7 @@ def create_trade_signature(trade: dict[str, object]) -> str | None:
     This is faster than parsing and allows early duplicate detection.
 
     Args:
-        trade: Raw trade dictionary from API
+        trade: Raw trade dictionary from API (The Graph or Data API format)
 
     Returns:
         Unique signature string or None if invalid
@@ -79,8 +79,16 @@ def create_trade_signature(trade: dict[str, object]) -> str | None:
         # Extract data directly without type conversion (faster)
         timestamp = trade.get("timestamp")
         price = trade.get("price")
-        size = trade.get("size")
-        trader_address = trade.get("proxyWallet") or trade.get("user", "")
+        
+        # The Graph uses "amount", Data API uses "size"
+        size = trade.get("amount") or trade.get("size")
+        
+        # The Graph uses user.id nested, Data API uses proxyWallet
+        user_obj = trade.get("user")
+        if isinstance(user_obj, dict):
+            trader_address = user_obj.get("id", "")
+        else:
+            trader_address = trade.get("proxyWallet") or trade.get("user", "") or ""
 
         # Quick validation
         if not trader_address or not timestamp:
@@ -96,9 +104,10 @@ def create_trade_signature(trade: dict[str, object]) -> str | None:
 def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, float, float, str, str, str] | None:
     """
     Parse a single trade from API response to database format.
+    Supports both The Graph API and Data API formats.
 
     Args:
-        trade: Trade dictionary from Data API response
+        trade: Trade dictionary from The Graph API or Data API response
         market_id: Market conditionId to associate with this trade
 
     Returns:
@@ -107,10 +116,18 @@ def parse_trade_data(trade: dict[str, object], market_id: str) -> tuple[int, flo
     try:
         timestamp = int(trade.get("timestamp", 0))
         price = float(trade.get("price", 0.0))
-        size = float(trade.get("size", 0.0))
-        # Data API uses "proxyWallet" instead of "user"
-        trader_address = str(trade.get("proxyWallet", ""))
-        # Extract side (buy/sell)
+        
+        # The Graph uses "amount", Data API uses "size"
+        size = float(trade.get("amount") or trade.get("size", 0.0))
+        
+        # The Graph uses nested user.id, Data API uses proxyWallet
+        user_obj = trade.get("user")
+        if isinstance(user_obj, dict):
+            trader_address = str(user_obj.get("id", ""))
+        else:
+            trader_address = str(trade.get("proxyWallet") or trade.get("user", "") or "")
+        
+        # Extract side (buy/sell) - both APIs use "side"
         side = str(trade.get("side", "")).lower() or "unknown"
 
         # Validate required fields
@@ -129,7 +146,7 @@ def fetch_trades(
     api_client: PolymarketAPIClient | None = None,
 ) -> list[tuple[int, float, float, str, str, str]]:
     """
-    Fetch and parse trades from the Polymarket Data API.
+    Fetch and parse trades from The Graph API.
 
     Args:
         condition_id: Market conditionId (not numeric ID)
@@ -144,7 +161,7 @@ def fetch_trades(
         api_client = PolymarketAPIClient()
 
     try:
-        # Fetch trades from Data API (returns array directly)
+        # Fetch trades from The Graph API
         trades_data = api_client.get_trades(condition_id, limit=limit)
 
         # Parse all trades
@@ -169,35 +186,35 @@ async def async_fetch_trades_by_date_range(
     max_offset: int = 50000,  # Increased to handle old dates
 ) -> list[dict[str, object]]:
     """
-    Fetch trades for a specific date range using offset pagination with client-side filtering.
+    Fetch trades for a specific date range using skip pagination with client-side filtering.
     
-    This function continues fetching with increasing offsets until it finds trades
-    in the target date range or passes beyond it. This is necessary because API
-    returns trades sorted from newest to oldest, so old dates require high offsets.
+    This function continues fetching with increasing skip values until it finds trades
+    in the target date range or passes beyond it. The Graph API returns trades sorted
+    from newest to oldest, so old dates require high skip values.
     
     Args:
         condition_id: Market conditionId
         start_timestamp: Start of date range (inclusive)
         end_timestamp: End of date range (exclusive)
         api_client: Async API client
-        max_offset: Maximum offset to use (increased to handle old dates)
+        max_offset: Maximum skip to use (increased to handle old dates)
     
     Returns:
         List of trade dictionaries within the date range
     """
     all_trades: list[dict[str, object]] = []
-    offset = 0
+    skip = 0
     limit = 500
     max_iterations = 200  # Increased for old dates
     consecutive_empty_ranges = 0  # Counter for empty batches in a row
     
     for _ in range(max_iterations):
-        if offset >= max_offset:
+        if skip >= max_offset:
             break
         
-        # Fetch trades batch
+        # Fetch trades batch from The Graph API
         trades_data = await api_client.get_trades(
-            condition_id, limit=limit, offset=offset
+            condition_id, limit=limit, offset=skip
         )
         
         if not trades_data:
@@ -249,8 +266,8 @@ async def async_fetch_trades_by_date_range(
                 # We've passed the needed range and several batches in a row are empty
                 break
         
-        # Move to next offset
-        offset += len(trades_data)
+        # Move to next skip
+        skip += len(trades_data)
     
     return all_trades
 
@@ -337,14 +354,14 @@ async def async_fetch_all_trades(
     event_slug: str | None = None,
 ) -> int:
     """
-    Fetch ALL trades using date-based pagination to work around API offset bug.
+    Fetch ALL trades using date-based pagination with The Graph API.
 
     This function splits the date range into daily intervals and fetches trades
     for each day separately, filtering by timestamp on the client side.
-    This avoids the API bug where offset-based pagination breaks after ~1000-1500.
+    Uses The Graph API for fetching trades and regular Polymarket API for market info.
 
     Key optimizations:
-    - Date-based pagination (avoids offset bug)
+    - Date-based pagination with The Graph API
     - Checks uniqueness BEFORE parsing (saves CPU on duplicates)
     - Loads existing trades once at start
     - Uses single DB connection for all operations
@@ -435,6 +452,9 @@ async def async_fetch_all_trades(
         total_skipped = 0
         seen_signatures = existing_signatures.copy()
         
+        # Словарь для хранения количества сделок по дням
+        day_trades_count: dict[str, int] = {}
+        
         # Buffer for batching DB operations
         batch_buffer: list[tuple[int, float, float, str, str, str]] = []
         BUFFER_SIZE = 2000
@@ -453,7 +473,7 @@ async def async_fetch_all_trades(
                 interval_start,
                 interval_end,
                 api_client,
-                max_offset=1000,  # Stop before offset bug kicks in
+                max_offset=50000,  # The Graph API supports higher skip values
             )
             
             # Filter duplicates BEFORE parsing
@@ -475,55 +495,93 @@ async def async_fetch_all_trades(
                 if parsed:
                     parsed_trades.append(parsed)
             
-            # Display status for this day
+            # Сохраняем информацию о количестве сделок по дням для финального вывода
             if parsed_trades:
-                print(f"[{interval_idx}/{len(date_intervals)}] {interval_date_str} - Получено {len(parsed_trades)} сделок")
+                day_trades_count[interval_date_str] = len(parsed_trades)
                 batch_buffer.extend(parsed_trades)
                 
                 # Save when buffer is full
                 if len(batch_buffer) >= BUFFER_SIZE:
-                    if save_to_db and db_conn:
-                        cursor = db_conn.cursor()
-                        cursor.executemany(
-                            "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
-                            batch_buffer,
-                        )
-                        db_conn.commit()
-                        inserted_count = cursor.rowcount
-                        total_loaded += inserted_count
-                    else:
-                        total_loaded += len(batch_buffer)
+                    # Фильтруем дубликаты внутри батча ПЕРЕД сохранением
+                    unique_in_batch = {}
+                    for trade in batch_buffer:
+                        # Создаем сигнатуру из уже распарсенных данных
+                        sig = f"{trade[0]}|{trade[1]}|{trade[2]}|{trade[3]}"
+                        if sig not in unique_in_batch and sig not in seen_signatures:
+                            unique_in_batch[sig] = trade
+                            seen_signatures.add(sig)
+                    
+                    # Подсчитываем пропущенные дубликаты
+                    skipped_in_batch = len(batch_buffer) - len(unique_in_batch)
+                    total_skipped += skipped_in_batch
+                    
+                    # Сохраняем только уникальные сделки
+                    if unique_in_batch:
+                        unique_batch_list = list(unique_in_batch.values())
+                        if save_to_db and db_conn:
+                            cursor = db_conn.cursor()
+                            cursor.executemany(
+                                "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
+                                unique_batch_list,
+                            )
+                            db_conn.commit()
+                            inserted_count = cursor.rowcount
+                            total_loaded += inserted_count
+                        else:
+                            total_loaded += len(unique_batch_list)
                     
                     batch_buffer = []
                     
                     # Progress callback
                     if progress_callback:
                         progress_callback(total_loaded, total_loaded + len(batch_buffer))
-            else:
-                # Still show status even if no new trades
-                print(f"[{interval_idx}/{len(date_intervals)}] {interval_date_str} - Получено 0 сделок")
         
-        # Save remaining buffer
+        # Save remaining buffer (с проверкой уникальности)
         if batch_buffer:
-            if save_to_db and db_conn:
-                cursor = db_conn.cursor()
-                cursor.executemany(
-                    "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
-                    batch_buffer,
-                )
-                db_conn.commit()
-                inserted_count = cursor.rowcount
-                total_loaded += inserted_count
-            else:
-                total_loaded += len(batch_buffer)
+            # Фильтруем дубликаты внутри последнего батча
+            unique_in_batch = {}
+            for trade in batch_buffer:
+                sig = f"{trade[0]}|{trade[1]}|{trade[2]}|{trade[3]}"
+                if sig not in unique_in_batch and sig not in seen_signatures:
+                    unique_in_batch[sig] = trade
+                    seen_signatures.add(sig)
+            
+            # Подсчитываем пропущенные дубликаты
+            skipped_in_batch = len(batch_buffer) - len(unique_in_batch)
+            total_skipped += skipped_in_batch
+            
+            # Сохраняем только уникальные сделки
+            if unique_in_batch:
+                unique_batch_list = list(unique_in_batch.values())
+                if save_to_db and db_conn:
+                    cursor = db_conn.cursor()
+                    cursor.executemany(
+                        "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
+                        unique_batch_list,
+                    )
+                    db_conn.commit()
+                    inserted_count = cursor.rowcount
+                    total_loaded += inserted_count
+                else:
+                    total_loaded += len(unique_batch_list)
 
-        total_processed = total_loaded + total_skipped
-        efficiency = (total_loaded / total_processed * 100) if total_processed > 0 else 0.0
-
-        print(f"\n✓ Finished processing {len(date_intervals)} daily intervals.")
-        print(f"  ✓ New trades loaded: {total_loaded:,}")
-        print(f"  ✓ Duplicates skipped: {total_skipped:,}")
-        print(f"  ✓ Efficiency: {efficiency:.1f}% unique")
+        # Выводим дату начала и конца
+        start_date_str = datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d')
+        end_date_str = datetime.fromtimestamp(end_timestamp, tz=timezone.utc).strftime('%Y-%m-%d')
+        print(f"\nПериод обработки: {start_date_str} - {end_date_str}")
+        
+        # Выводим список сделок по дням
+        if day_trades_count:
+            print("\nСделки по дням:")
+            # Сортируем по дате
+            sorted_days = sorted(day_trades_count.items())
+            for date_str, count in sorted_days:
+                print(f"  {date_str} - {count} сделок")
+        
+        print(f"\n✓ Обработка завершена.")
+        print(f"  Загружено новых сделок: {total_loaded:,}")
+        if total_skipped > 0:
+            print(f"  Пропущено дубликатов: {total_skipped:,}")
         
         # Calculate total volume for this market if saving to DB
         if save_to_db and db_conn:
@@ -535,7 +593,7 @@ async def async_fetch_all_trades(
                 )
                 result = cursor.fetchone()
                 total_volume = result[0] if result and result[0] is not None else 0.0
-                print(f"  ✓ Total volume in database: {total_volume:,.2f}")
+                print(f"  Общий объем в базе: {total_volume:,.2f}")
             except Exception:
                 pass
 
@@ -554,16 +612,15 @@ def fetch_all_trades(
     limit_per_page: int = 500,
 ) -> list[tuple[int, float, float, str, str, str]]:
     """
-    Fetch ALL trades from Polymarket Data API.
+    Fetch ALL trades from The Graph API using pagination.
 
-    Note: Data API doesn't support pagination with cursor, so this fetches all available
-    trades up to the limit. For full historical data, you may need to call this multiple
-    times or use a different approach.
+    Note: The Graph API supports skip-based pagination. This function fetches trades
+    in batches until no more trades are available.
 
     Args:
         condition_id: Market conditionId (not numeric ID)
         api_client: Optional API client (creates new if None)
-        limit_per_page: Number of trades to fetch (Data API may have its own limits)
+        limit_per_page: Number of trades to fetch per page
 
     Returns:
         List of all parsed trades as tuples (timestamp, price, size, trader_address, market_id, side)
@@ -573,18 +630,32 @@ def fetch_all_trades(
         api_client = PolymarketAPIClient()
 
     try:
-        # Data API returns array directly, pagination may not be supported
-        # Fetch with high limit to get as many trades as possible
-        trades_data = api_client.get_trades(condition_id, limit=limit_per_page)
-
-        # Parse all trades
-        parsed_trades: list[tuple[int, float, float, str, str, str]] = []
-        for trade in trades_data:
-            parsed = parse_trade_data(trade, condition_id)
-            if parsed:
-                parsed_trades.append(parsed)
-
-        return parsed_trades
+        all_parsed_trades: list[tuple[int, float, float, str, str, str]] = []
+        skip = 0
+        max_iterations = 1000  # Safety limit
+        
+        for _ in range(max_iterations):
+            # Fetch trades batch
+            trades_data = api_client.get_trades(condition_id, limit=limit_per_page, skip=skip)
+            
+            if not trades_data:
+                # No more trades
+                break
+            
+            # Parse trades
+            for trade in trades_data:
+                parsed = parse_trade_data(trade, condition_id)
+                if parsed:
+                    all_parsed_trades.append(parsed)
+            
+            # If we got fewer trades than requested, we're done
+            if len(trades_data) < limit_per_page:
+                break
+            
+            # Move to next page
+            skip += len(trades_data)
+        
+        return all_parsed_trades
     finally:
         if should_close:
             api_client.close()

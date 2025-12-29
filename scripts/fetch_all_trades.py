@@ -151,7 +151,6 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
         # Verify (use condition_id for DB query since that's what we stored)
         if save_to_db:
             total_count = get_trade_count(condition_id)
-            print(f"✓ Total unique trades in database for market {condition_id}: {total_count:,}")
             
             # Calculate total volume (sum of all sizes)
             from src.database.connection import get_connection
@@ -164,16 +163,16 @@ async def async_main(market_id: str, save_to_db: bool = True, max_trades: int = 
                 )
                 result = cursor.fetchone()
                 total_volume = result[0] if result and result[0] is not None else 0.0
-                print(f"✓ Total volume: {total_volume:,.2f}")
+                
+                # Выводим только нужную статистику
+                print(f"\nСтатистика по рынку:")
+                print(f"  Количество сделок: {total_count:,}")
+                print(f"  Общий объем: {total_volume:,.2f}")
+                print(f"\n✓ Статус: Успешно загружено {total_loaded:,} новых сделок")
             finally:
                 db_conn_stats.close()
-
-        # Calculate final statistics
-        if _start_time:
-            total_time = time.time() - _start_time
-            avg_speed = total_loaded / total_time if total_time > 0 else 0
-            print(f"✓ Average speed: {avg_speed:.0f} trades/sec")
-            print(f"✓ Total time: {int(total_time // 60)}m {int(total_time % 60)}s")
+        else:
+            print(f"\n✓ Статус: Успешно получено {total_loaded:,} сделок (без сохранения в БД)")
 
         print("\n✓ Done!")
     except Exception as e:
