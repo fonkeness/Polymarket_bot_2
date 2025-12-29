@@ -13,7 +13,7 @@ from src.utils.config import (
     API_RATE_LIMIT,
     POLYMARKET_API_V1_URL,
     POLYMARKET_GAMMA_API_URL,
-    POLYMARKET_DATA_API_URL,
+    THE_GRAPH_API_URL,
 )
 
 
@@ -105,31 +105,78 @@ class PolymarketAPIClient:
         condition_id: str,
         limit: int = 500,
         cursor: str | None = None,
+        skip: int = 0,
     ) -> list[dict[str, object]]:
         """
-        Fetch trades for a specific market using conditionId via Data API.
+        Fetch trades for a specific market using conditionId via The Graph API.
 
         Args:
             condition_id: Market conditionId (not numeric ID)
             limit: Maximum number of trades to fetch
-            cursor: Pagination cursor (not used by data-api, kept for compatibility)
+            cursor: Pagination cursor (not used, kept for compatibility)
+            skip: Number of trades to skip (for pagination)
 
         Returns:
-            List of trade dictionaries (data-api returns array directly)
+            List of trade dictionaries from The Graph API
 
         Raises:
             HTTPError: If the API request fails
         """
-        url = f"{POLYMARKET_DATA_API_URL}/trades"
-        params: dict[str, object] = {"market": condition_id, "limit": limit}
+        # GraphQL query to fetch trades for a specific market
+        graphql_query = """
+        query GetTrades($marketId: String!, $first: Int!, $skip: Int!) {
+            trades(
+                first: $first
+                skip: $skip
+                where: { market: $marketId }
+                orderBy: timestamp
+                orderDirection: desc
+            ) {
+                id
+                market {
+                    id
+                }
+                outcomeIndex
+                price
+                amount
+                timestamp
+                user {
+                    id
+                }
+                side
+            }
+        }
+        """
+        
+        variables = {
+            "marketId": condition_id,
+            "first": limit,
+            "skip": skip,
+        }
+        
+        payload = {
+            "query": graphql_query,
+            "variables": variables,
+        }
+        
+        headers = {"Content-Type": "application/json"}
+        
         self._wait_for_rate_limit()
-        response = self.client.get(url, params=params)
+        response = self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
         response.raise_for_status()
-        trades = response.json()
-        # Data API returns array directly, not wrapped in object
-        if not isinstance(trades, list):
-            return []
-        return trades
+        
+        result = response.json()
+        
+        # The Graph returns data in {"data": {"trades": [...]}} format
+        if "data" in result and "trades" in result["data"]:
+            return result["data"]["trades"]
+        
+        # Check for errors
+        if "errors" in result:
+            error_msg = "; ".join(str(err) for err in result["errors"])
+            raise HTTPError(f"The Graph API error: {error_msg}")
+        
+        return []
 
     @beartype
     def get_market_info(self, market_id: str) -> dict[str, object]:
@@ -262,29 +309,74 @@ class AsyncPolymarketAPIClient:
         offset: int = 0,
     ) -> list[dict[str, object]]:
         """
-        Fetch trades for a specific market using conditionId via Data API with offset pagination.
+        Fetch trades for a specific market using conditionId via The Graph API with skip pagination.
 
         Args:
             condition_id: Market conditionId (not numeric ID)
             limit: Maximum number of trades to fetch per page
-            offset: Offset for pagination (number of trades to skip)
+            offset: Number of trades to skip (for pagination)
 
         Returns:
-            List of trade dictionaries (data-api returns array directly)
+            List of trade dictionaries from The Graph API
 
         Raises:
             HTTPError: If the API request fails
         """
-        url = f"{POLYMARKET_DATA_API_URL}/trades"
-        params: dict[str, object] = {"market": condition_id, "limit": limit, "offset": offset}
+        # GraphQL query to fetch trades for a specific market
+        graphql_query = """
+        query GetTrades($marketId: String!, $first: Int!, $skip: Int!) {
+            trades(
+                first: $first
+                skip: $skip
+                where: { market: $marketId }
+                orderBy: timestamp
+                orderDirection: desc
+            ) {
+                id
+                market {
+                    id
+                }
+                outcomeIndex
+                price
+                amount
+                timestamp
+                user {
+                    id
+                }
+                side
+            }
+        }
+        """
+        
+        variables = {
+            "marketId": condition_id,
+            "first": limit,
+            "skip": offset,
+        }
+        
+        payload = {
+            "query": graphql_query,
+            "variables": variables,
+        }
+        
+        headers = {"Content-Type": "application/json"}
+        
         await self._wait_for_rate_limit()
-        response = await self.client.get(url, params=params)
+        response = await self.client.post(THE_GRAPH_API_URL, json=payload, headers=headers)
         response.raise_for_status()
-        trades = response.json()
-        # Data API returns array directly, not wrapped in object
-        if not isinstance(trades, list):
-            return []
-        return trades
+        
+        result = response.json()
+        
+        # The Graph returns data in {"data": {"trades": [...]}} format
+        if "data" in result and "trades" in result["data"]:
+            return result["data"]["trades"]
+        
+        # Check for errors
+        if "errors" in result:
+            error_msg = "; ".join(str(err) for err in result["errors"])
+            raise HTTPError(f"The Graph API error: {error_msg}")
+        
+        return []
 
     async def close(self) -> None:
         """Close the HTTP client."""
