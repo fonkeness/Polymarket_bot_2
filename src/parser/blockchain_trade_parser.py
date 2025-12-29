@@ -1,4 +1,9 @@
-"""Blockchain event parser for Polymarket trade events."""
+"""Blockchain event parser for Polymarket trade events.
+
+Polymarket CLOB (Central Limit Order Book) is Polymarket's own development for order book
+implementation. It handles limit orders and aggregates liquidity.
+See: https://habr.com/ru/companies/metalamp/articles/851892/
+"""
 
 from __future__ import annotations
 
@@ -18,7 +23,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Polymarket CLOB OrderFilled event signature
-# Based on typical CLOB implementations, this may need adjustment
+# CLOB emits OrderFilled events when orders are matched
+# Based on typical CLOB implementations, this may need adjustment based on actual contract ABI
 ORDER_FILLED_EVENT_SIGNATURE = "OrderFilled(address,bytes32,int256,int256,address,uint256)"
 # Alternative signatures to try
 ALTERNATIVE_EVENT_SIGNATURES = [

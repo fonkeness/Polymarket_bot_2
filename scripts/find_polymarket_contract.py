@@ -16,11 +16,106 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Known Polymarket contract addresses (to verify)
+# Known Polymarket CLOB contract addresses on Polygon
+# CLOB (Central Limit Order Book) is Polymarket's own development for order book implementation
+# Source: https://habr.com/ru/companies/metalamp/articles/851892/
 KNOWN_POLYMARKET_CONTRACTS = [
-    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bc8B1b5c3",  # Example - needs verification
-    # Add more known addresses here
+    # Add verified addresses here when found
+    # You can find them by:
+    # 1. Searching Polygonscan for "CLOB" or "Polymarket CLOB"
+    # 2. Checking Polymarket GitHub repositories
+    # 3. Looking for contracts with OrderFilled events
 ]
+
+# Alternative: Search for contract by checking recent transactions
+# Polymarket CLOB is very active, so we can search recent blocks for OrderFilled events
+
+
+@beartype
+def search_contract_in_recent_blocks(max_blocks: int = 500) -> list[tuple[str, int]]:
+    """
+    Search for Polymarket CLOB contract by scanning recent blocks for OrderFilled events.
+    
+    This function scans recent blocks and looks for contracts emitting OrderFilled events.
+    Returns list of (contract_address, event_count) tuples sorted by event count.
+    
+    Args:
+        max_blocks: Maximum number of recent blocks to scan
+        
+    Returns:
+        List of tuples (contract_address, event_count) sorted by event count (descending)
+    """
+    logger.info(f"Searching for Polymarket CLOB contract in last {max_blocks} blocks...")
+    logger.info("This may take a few minutes...")
+    
+    with PolygonBlockchainClient() as client:
+        try:
+            current_block = client.get_current_block_number()
+            from_block = max(0, current_block - max_blocks)
+            
+            logger.info(f"Scanning blocks {from_block} to {current_block}")
+            
+            # Event signature for OrderFilled
+            event_signature = "OrderFilled(address,bytes32,int256,int256,address,uint256)"
+            event_topic = client.web3.keccak(text=event_signature).hex()
+            
+            # Dictionary to count events per contract
+            contract_event_counts: dict[str, int] = {}
+            
+            # Scan blocks in chunks
+            chunk_size = 50  # Smaller chunks to avoid RPC limits
+            total_chunks = (current_block - from_block) // chunk_size + 1
+            processed_chunks = 0
+            
+            for chunk_start in range(from_block, current_block, chunk_size):
+                chunk_end = min(chunk_start + chunk_size - 1, current_block)
+                processed_chunks += 1
+                
+                try:
+                    logger.log_progress(
+                        processed_chunks,
+                        total_chunks,
+                        "chunks",
+                        update_interval=max(1, total_chunks // 10),
+                    )
+                    
+                    # Get all logs in this chunk with OrderFilled event signature
+                    filter_params = {
+                        "fromBlock": chunk_start,
+                        "toBlock": chunk_end,
+                        "topics": [event_topic],
+                    }
+                    
+                    logs = client.web3.eth.get_logs(filter_params)
+                    
+                    # Count events per contract
+                    for log in logs:
+                        contract_addr = log["address"].lower()
+                        contract_event_counts[contract_addr] = contract_event_counts.get(contract_addr, 0) + 1
+                    
+                except Exception as e:
+                    logger.debug(f"Error searching chunk {chunk_start}-{chunk_end}: {e}")
+                    continue
+            
+            # Sort by event count (most active first)
+            sorted_contracts = sorted(
+                contract_event_counts.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            
+            logger.info(f"Found {len(sorted_contracts)} contracts with OrderFilled events")
+            
+            if sorted_contracts:
+                logger.info("Top contracts by event count:")
+                for addr, count in sorted_contracts[:10]:  # Show top 10
+                    logger.info(f"  {addr}: {count} events")
+            
+            return sorted_contracts
+            
+        except Exception as e:
+            logger.error(f"Error searching recent blocks: {e}")
+            return []
 
 
 @beartype
@@ -81,6 +176,8 @@ def find_contract_from_transaction(tx_hash: str) -> str | None:
 
         except Exception as e:
             logger.error(f"Error analyzing transaction: {e}")
+            logger.info("Note: Transaction might be on a different network (Ethereum instead of Polygon)")
+            logger.info("Or the transaction hash might be incorrect")
             return None
 
 
@@ -168,16 +265,83 @@ def main(tx_hash: str | None = None) -> None:
             print("✗ Current address verification failed")
     else:
         print("No contract address configured")
-        print("\nTo find contract from transaction, run:")
-        print(f"  python scripts/find_polymarket_contract.py <tx_hash>")
-        print("\nExample:")
-        print("  python scripts/find_polymarket_contract.py 0xa08bf5e2acca8cf3f85209795cf278128a30869c5a8bfb97851e19fd21d0d21e")
+        print("\nOptions to find the contract:")
+        print("\n1. Auto-search in recent blocks (RECOMMENDED):")
+        print("   python scripts/find_polymarket_contract.py --search")
+        print("   This will scan recent Polygon blocks for OrderFilled events")
+        print("\n2. From transaction hash (if you have a valid Polygon transaction):")
+        print(f"   python scripts/find_polymarket_contract.py <tx_hash>")
+        print("\n3. Find on Polygonscan:")
+        print("   - Go to https://polygonscan.com")
+        print("   - Search for 'Polymarket CLOB' or 'CLOB'")
+        print("   - Look for contract with recent OrderFilled events")
+        print("\n4. Check Polymarket documentation:")
+        print("   - Official docs may list contract addresses")
+        print("   - GitHub repositories may have addresses")
+        print("\nOnce you have the contract address, add it to src/utils/config.py:")
+        print('   POLYMARKET_CLOB_CONTRACT_ADDRESS = "0x..."')
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        tx_hash = sys.argv[1]
-        main(tx_hash)
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Find Polymarket CLOB contract address",
+    )
+    parser.add_argument(
+        "tx_hash",
+        nargs="?",
+        help="Transaction hash to analyze (optional)",
+    )
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help="Search for contract in recent blocks",
+    )
+    parser.add_argument(
+        "--max-blocks",
+        type=int,
+        default=500,
+        help="Maximum blocks to scan when using --search (default: 500)",
+    )
+    
+    args = parser.parse_args()
+    
+    if args.search:
+        # Auto-search mode
+        print("Polymarket Contract Finder - Auto Search Mode")
+        print("=" * 50)
+        print(f"Scanning last {args.max_blocks} blocks for OrderFilled events...")
+        print("This may take a few minutes...\n")
+        
+        contracts = search_contract_in_recent_blocks(max_blocks=args.max_blocks)
+        
+        if contracts:
+            print(f"\n✓ Found {len(contracts)} contracts with OrderFilled events")
+            print("\nTop candidates (most active contracts):")
+            print("-" * 50)
+            
+            for i, (addr, count) in enumerate(contracts[:5], 1):
+                print(f"\n{i}. Address: {addr}")
+                print(f"   Events found: {count}")
+                
+                # Verify each candidate
+                print(f"   Verifying...", end=" ")
+                if verify_contract_address(addr):
+                    print("✓ VALID - This appears to be Polymarket CLOB!")
+                    print(f"\n🎯 RECOMMENDED ADDRESS:")
+                    print(f"   {addr}")
+                    print(f"\nAdd this to src/utils/config.py:")
+                    print(f'POLYMARKET_CLOB_CONTRACT_ADDRESS = "{addr}"')
+                    break
+                else:
+                    print("✗ Not verified")
+        else:
+            print("\n✗ No contracts found with OrderFilled events")
+            print("Try increasing --max-blocks or check your RPC connection")
+    
+    elif args.tx_hash:
+        main(args.tx_hash)
     else:
         main()
 
