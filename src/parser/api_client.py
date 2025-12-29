@@ -235,6 +235,26 @@ class AsyncPolymarketAPIClient:
         return str(condition_id)
 
     @beartype
+    async def get_market_info(self, market_id: str) -> dict[str, object]:
+        """
+        Fetch market information from Gamma API.
+
+        Args:
+            market_id: Numeric market ID from Gamma API
+
+        Returns:
+            Market information dictionary (may contain createdAt, created_at, startDate, etc.)
+
+        Raises:
+            HTTPError: If the API request fails
+        """
+        url = f"{POLYMARKET_GAMMA_API_URL}/markets/{market_id}"
+        await self._wait_for_rate_limit()
+        response = await self.client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+    @beartype
     async def get_trades(
         self,
         condition_id: str,

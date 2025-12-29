@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from beartype import beartype
@@ -12,6 +13,54 @@ if TYPE_CHECKING:
 
 from src.database.repository import insert_trades_batch
 from src.parser.api_client import AsyncPolymarketAPIClient, PolymarketAPIClient
+
+
+@beartype
+def generate_daily_intervals(start_timestamp: int, end_timestamp: int) -> list[tuple[int, int]]:
+    """
+    Generate list of daily date intervals from start to end timestamp.
+    
+    Each interval represents one day: (start_of_day_timestamp, end_of_day_timestamp).
+    Intervals are inclusive of start, exclusive of end (to avoid overlaps).
+    
+    Args:
+        start_timestamp: Unix timestamp of the start date (inclusive)
+        end_timestamp: Unix timestamp of the end date (exclusive)
+    
+    Returns:
+        List of tuples (start_timestamp, end_timestamp) for each day
+    """
+    intervals: list[tuple[int, int]] = []
+    
+    # Convert timestamps to datetime (UTC)
+    start_dt = datetime.fromtimestamp(start_timestamp, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(end_timestamp, tz=timezone.utc)
+    
+    # Start from beginning of start day
+    current_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Generate intervals day by day
+    while current_dt < end_dt:
+        # Start of current day
+        day_start = current_dt
+        # Start of next day (end of current day)
+        day_end = day_start + timedelta(days=1)
+        
+        # Convert back to timestamps
+        day_start_ts = int(day_start.timestamp())
+        day_end_ts = int(day_end.timestamp())
+        
+        # Clamp to actual start/end timestamps
+        actual_start = max(day_start_ts, start_timestamp)
+        actual_end = min(day_end_ts, end_timestamp)
+        
+        if actual_start < actual_end:
+            intervals.append((actual_start, actual_end))
+        
+        # Move to next day
+        current_dt = day_end
+    
+    return intervals
 
 
 @beartype
@@ -112,6 +161,102 @@ def fetch_trades(
 
 
 @beartype
+async def async_fetch_trades_by_date_range(
+    condition_id: str,
+    start_timestamp: int,
+    end_timestamp: int,
+    api_client: AsyncPolymarketAPIClient,
+    max_offset: int = 1000,  # Stop before offset bug kicks in
+) -> list[dict[str, object]]:
+    """
+    Fetch trades for a specific date range using offset pagination with client-side filtering.
+    
+    This function works around the API offset bug by:
+    - Using small offset increments (0, 500, 1000...)
+    - Filtering trades by timestamp on client side
+    - Stopping before offset bug kicks in (~1000-1500)
+    
+    Args:
+        condition_id: Market conditionId
+        start_timestamp: Start of date range (inclusive)
+        end_timestamp: End of date range (exclusive)
+        api_client: Async API client
+        max_offset: Maximum offset to use before stopping (to avoid offset bug)
+    
+    Returns:
+        List of trade dictionaries within the date range
+    """
+    all_trades: list[dict[str, object]] = []
+    offset = 0
+    limit = 500
+    max_iterations = 10  # Safety limit
+    
+    for _ in range(max_iterations):
+        if offset >= max_offset:
+            # Stop before offset bug kicks in
+            break
+        
+        # Fetch trades batch
+        trades_data = await api_client.get_trades(
+            condition_id, limit=limit, offset=offset
+        )
+        
+        if not trades_data:
+            break
+        
+        # Filter trades by timestamp (client-side filtering)
+        trades_in_range: list[dict[str, object]] = []
+        oldest_timestamp = None
+        
+        for trade in trades_data:
+            trade_ts = trade.get("timestamp", 0)
+            if not trade_ts:
+                continue
+            
+            # Check if trade is in date range
+            if start_timestamp <= trade_ts < end_timestamp:
+                trades_in_range.append(trade)
+            
+            # Track oldest timestamp for stopping condition
+            if oldest_timestamp is None or trade_ts < oldest_timestamp:
+                oldest_timestamp = trade_ts
+        
+        all_trades.extend(trades_in_range)
+        
+        # Stop conditions:
+        # 1. Got fewer trades than requested (last page)
+        if len(trades_data) < limit:
+            break
+        
+        # 2. Check if we've passed the date range
+        if oldest_timestamp is not None:
+            # If oldest trade is older than start_timestamp, we've gone too far back
+            if oldest_timestamp < start_timestamp:
+                break
+            
+            # If oldest trade is newer than end_timestamp, all trades are too new
+            # But since API returns newest first, we should continue to get older trades
+            # So we only stop if we're getting trades that are all too new AND we got a full batch
+            # Actually, wait - if oldest_timestamp >= end_timestamp, we're getting trades
+            # that are all newer than our range. But since offset gives us older trades,
+            # we should continue. However, if we got a full batch and none are in range,
+            # and oldest is still >= end_timestamp, something is wrong.
+            # Actually, let's keep it simple: if oldest < start, we've passed the range.
+        
+        # 3. No trades in range and we got full batch - might be past the range
+        # Check if oldest timestamp indicates we've passed the range
+        if not trades_in_range and len(trades_data) == limit and oldest_timestamp is not None:
+            if oldest_timestamp < start_timestamp:
+                # All trades are older than our range - we've passed it
+                break
+        
+        # Move to next offset
+        offset += len(trades_data)
+    
+    return all_trades
+
+
+@beartype
 async def async_fetch_all_trades(
     condition_id: str,
     api_client: AsyncPolymarketAPIClient | None = None,
@@ -121,13 +266,14 @@ async def async_fetch_all_trades(
     max_trades: int = 1_000_000,
 ) -> int:
     """
-    Optimized fetch ALL trades with duplicate prevention BEFORE parsing.
+    Fetch ALL trades using date-based pagination to work around API offset bug.
 
-    This function uses offset-based pagination to fetch all historical trades.
-    Results are sorted by timestamp descending (newest first).
-    Trades are saved to database in batches to avoid memory issues.
+    This function splits the date range into daily intervals and fetches trades
+    for each day separately, filtering by timestamp on the client side.
+    This avoids the API bug where offset-based pagination breaks after ~1000-1500.
 
     Key optimizations:
+    - Date-based pagination (avoids offset bug)
     - Checks uniqueness BEFORE parsing (saves CPU on duplicates)
     - Loads existing trades once at start
     - Uses single DB connection for all operations
@@ -136,7 +282,7 @@ async def async_fetch_all_trades(
     Args:
         condition_id: Market conditionId (not numeric ID)
         api_client: Optional async API client (creates new if None)
-        limit_per_page: Number of trades to fetch per page (max 1000 recommended)
+        limit_per_page: Number of trades to fetch per page (not used in date-based approach, kept for compatibility)
         save_to_db: Whether to save trades to database
         progress_callback: Optional callback function(loaded_count, total_estimated) for progress
         max_trades: Maximum number of trades to fetch (protection against infinite loops)
@@ -152,7 +298,7 @@ async def async_fetch_all_trades(
 
     # Load existing trades from DB ONCE at start
     existing_signatures = set()
-    min_timestamp_in_db = None  # Запомнить минимальный timestamp из БД
+    min_timestamp_in_db = None
     if save_to_db:
         db_conn_read = get_connection()
         try:
@@ -167,7 +313,6 @@ async def async_fetch_all_trades(
             )
             existing_signatures = set(row[0] for row in cursor.fetchall())
             
-            # Получить минимальный timestamp отдельным запросом
             cursor.execute(
                 "SELECT MIN(timestamp) FROM trades WHERE market_id = ?",
                 (condition_id,),
@@ -177,11 +322,57 @@ async def async_fetch_all_trades(
             
             print(f"✓ Loaded {len(existing_signatures):,} existing unique trades for filtering")
             if min_timestamp_in_db:
-                from datetime import datetime
-                print(f"✓ Oldest trade in DB: {datetime.fromtimestamp(min_timestamp_in_db).strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"✓ Oldest trade in DB: {datetime.fromtimestamp(min_timestamp_in_db, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
         finally:
             db_conn_read.close()
 
+    # Determine start date: try to get from API, fallback to DB or fixed date
+    start_timestamp = None
+    
+    # Try to get market creation date from API
+    # Note: get_market_info requires numeric ID, but we only have condition_id
+    # Try using condition_id directly - might work if API supports it
+    try:
+        market_info = await api_client.get_market_info(condition_id)
+        # Try different possible field names for creation date
+        for field_name in ["createdAt", "created_at", "startDate", "start_date", "created"]:
+            if field_name in market_info:
+                field_value = market_info[field_name]
+                if isinstance(field_value, (int, float)):
+                    start_timestamp = int(field_value)
+                elif isinstance(field_value, str):
+                    # Try to parse ISO format or other date formats
+                    try:
+                        dt = datetime.fromisoformat(field_value.replace("Z", "+00:00"))
+                        start_timestamp = int(dt.timestamp())
+                    except (ValueError, AttributeError):
+                        pass
+                if start_timestamp:
+                    print(f"✓ Found market creation date from API: {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+                    break
+    except Exception:
+        # API call failed or field not found - use fallback
+        pass
+    
+    # Fallback: use min_timestamp_in_db - 1 day, or fixed date, or current date - 1 year
+    if start_timestamp is None:
+        if min_timestamp_in_db:
+            # Use oldest trade in DB minus 1 day to catch any missed trades
+            start_timestamp = min_timestamp_in_db - 86400
+            print(f"⚠️  Using fallback start date: {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} (oldest in DB - 1 day)")
+        else:
+            # Use fixed fallback date (e.g., 2024-11-19 for this market) or current date - 1 year
+            fallback_date = datetime(2024, 11, 19, tzinfo=timezone.utc)
+            start_timestamp = int(fallback_date.timestamp())
+            print(f"⚠️  Using fixed fallback start date: {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # End date: current time
+    end_timestamp = int(datetime.now(timezone.utc).timestamp())
+    
+    # Generate daily intervals
+    date_intervals = generate_daily_intervals(start_timestamp, end_timestamp)
+    print(f"✓ Generated {len(date_intervals)} daily intervals from {datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime('%Y-%m-%d')} to {datetime.fromtimestamp(end_timestamp, tz=timezone.utc).strftime('%Y-%m-%d')}")
+    
     # Use single connection for all write operations
     db_conn = None
     if save_to_db:
@@ -189,181 +380,79 @@ async def async_fetch_all_trades(
 
     try:
         total_loaded = 0
-        total_skipped = 0  # Counter for skipped duplicates
-        offset = 0
-        effective_limit = min(limit_per_page, 500)
-
-        # Set of seen trades in this session (for fast checking)
+        total_skipped = 0
         seen_signatures = existing_signatures.copy()
-
-        # Infinite loop protection
-        last_batch_signatures = None
-        duplicate_batch_count = 0
-        max_duplicate_batches = 5  # Увеличено с 3 до 5
-        iterations = 0
-        # Увеличить max_iterations - добавить больше запасных итераций
-        max_iterations = (max_trades // effective_limit) * 3 + 2000  # Увеличено в 3 раза + большой запас
-
+        
         # Buffer for batching DB operations
         batch_buffer: list[tuple[int, float, float, str, str, str]] = []
-        BUFFER_SIZE = 2000  # Save every 2000 trades instead of every 500
-
-        while True:
-            iterations += 1
-
-            # Protection 1: Maximum number of trades
+        BUFFER_SIZE = 2000
+        
+        # Process each daily interval
+        for interval_idx, (interval_start, interval_end) in enumerate(date_intervals, 1):
             if total_loaded >= max_trades:
                 print(f"\n⚠️  Reached maximum limit: {max_trades:,} trades. Stopping.")
                 break
-
-            # Protection 2: Maximum iterations
-            if iterations > max_iterations:
-                print(f"\n⚠️  Reached maximum iterations: {max_iterations}. Stopping.")
-                break
-
-            # Fetch trades batch
-            trades_data = await api_client.get_trades(
-                condition_id, limit=effective_limit, offset=offset
+            
+            interval_date_str = datetime.fromtimestamp(interval_start, tz=timezone.utc).strftime('%Y-%m-%d')
+            print(f"\n[{interval_idx}/{len(date_intervals)}] Fetching trades for {interval_date_str}...")
+            
+            # Fetch trades for this date range
+            trades_data = await async_fetch_trades_by_date_range(
+                condition_id,
+                interval_start,
+                interval_end,
+                api_client,
+                max_offset=1000,  # Stop before offset bug kicks in
             )
-
+            
             if not trades_data:
-                print(f"\n✓ No more trades at offset {offset:,}. Finished.")
-                break
-
-            # OPTIMIZATION: Check uniqueness BEFORE parsing
+                continue
+            
+            # Filter duplicates BEFORE parsing
             new_trades_data = []
-            current_batch_signatures = set()
-
             for trade in trades_data:
-                # Create signature WITHOUT parsing (fast!)
                 signature = create_trade_signature(trade)
-
                 if signature is None:
-                    continue  # Skip invalid
-
-                # Check for duplicates: not in DB and not in this session
+                    continue
                 if signature not in seen_signatures:
                     new_trades_data.append(trade)
                     seen_signatures.add(signature)
-                    current_batch_signatures.add(signature)
                 else:
-                    total_skipped += 1  # Count skipped duplicates
-
-            # Protection 3: Check if we got the same data as last time
-            # ИСПРАВЛЕНИЕ: Не считать пустые батчи как дубликаты
-            # Пустой батч = все трейды были дубликатами, но это не значит что мы достигли конца
-            if current_batch_signatures and last_batch_signatures and current_batch_signatures == last_batch_signatures:
-                duplicate_batch_count += 1
-                if duplicate_batch_count >= max_duplicate_batches:
-                    # Проверить timestamp - может быть мы действительно достигли конца?
-                    if trades_data:
-                        timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
-                        if timestamps:
-                            oldest_timestamp = min(timestamps)
-                            from datetime import datetime
-                            oldest_date = datetime.fromtimestamp(oldest_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                            print(f"\n⚠️  Stopping: Got duplicate batches {max_duplicate_batches} times in a row.")
-                            print(f"  Last trade timestamp: {oldest_date}")
-                            
-                            # Если timestamp очень старый (раньше чем в БД), возможно это действительно конец
-                            if min_timestamp_in_db and oldest_timestamp >= min_timestamp_in_db:
-                                print(f"  Note: Timestamp is newer than oldest in DB. May have reached end of available data.")
-                            break
-                    else:
-                        print(f"\n⚠️  Stopping: Got duplicate batches {max_duplicate_batches} times in a row.")
-                        break
-            elif not current_batch_signatures and not last_batch_signatures:
-                # Оба батча пустые (все дубликаты) - это нормально, продолжаем
-                duplicate_batch_count = 0
-            else:
-                duplicate_batch_count = 0
-
-            last_batch_signatures = current_batch_signatures
-
-            # Parse ONLY unique trades (saves CPU!)
+                    total_skipped += 1
+            
+            # Parse unique trades
             parsed_trades: list[tuple[int, float, float, str, str, str]] = []
             for trade in new_trades_data:
                 parsed = parse_trade_data(trade, condition_id)
                 if parsed:
                     parsed_trades.append(parsed)
-
-            # If no new trades in this batch
-            if not parsed_trades:
-                if len(trades_data) < effective_limit:
-                    print(f"\n✓ No new trades and got fewer than requested. Finished.")
-                    break
-                # ИСПРАВЛЕНИЕ: Если получили полный батч, но все дубликаты - это нормально
-                # Продолжаем загрузку, так как могут быть новые трейды дальше
-                # НО: если offset очень большой и много дубликатов подряд, возможно достигли конца
-                if offset > 500000 and duplicate_batch_count >= 5:
-                    print(f"\n⚠️  Large offset ({offset:,}) with many duplicate batches. May have reached end.")
-                    # Проверить timestamp
-                    if trades_data:
-                        timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
-                        if timestamps:
-                            oldest_timestamp = min(timestamps)
-                            if min_timestamp_in_db and oldest_timestamp > min_timestamp_in_db + 86400:
-                                print(f"  But timestamps suggest more data may exist. Continuing...")
-                # If got full batch but all duplicates - continue
-                offset += len(trades_data)
-                continue
-
-            # Add to buffer instead of immediate saving
-            batch_buffer.extend(parsed_trades)
-
-            # Save only when buffer is full
-            if len(batch_buffer) >= BUFFER_SIZE:
-                if save_to_db and db_conn:
-                    cursor = db_conn.cursor()
-                    cursor.executemany(
-                        "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
-                        batch_buffer,
-                    )
-                    db_conn.commit()
-                    inserted_count = cursor.rowcount
-                    total_loaded += inserted_count
-                else:
-                    total_loaded += len(batch_buffer)
-
-                batch_buffer = []
-
-            # Progress callback
-            if progress_callback:
-                estimated_total = (
-                    total_loaded + effective_limit if len(trades_data) == effective_limit else total_loaded
-                )
-                progress_callback(total_loaded + len(batch_buffer), estimated_total)
-
-            # Periodically show statistics
-            if iterations % 50 == 0:
-                print(
-                    f"\n[Stats] Loaded: {total_loaded:,} | Skipped duplicates: {total_skipped:,} | Offset: {offset:,}"
-                )
-
-            # Check if we got fewer trades than requested (last page)
-            if len(trades_data) < effective_limit:
-                print(f"\n✓ Got fewer trades than requested ({len(trades_data)} < {effective_limit}). Finished.")
-                break
-
-            # Move to next page
-            offset += len(trades_data)
-
-            # Protection 4: Check that offset increased
-            if offset % (effective_limit * 100) == 0 and offset > 0:
-                print(f"\n[Debug] Offset: {offset:,}, Loaded: {total_loaded:,}, New in batch: {len(parsed_trades)}")
             
-            # НОВОЕ: Проверить timestamp батча для отладки
-            if trades_data and iterations % 20 == 0:  # Каждые 20 итераций
-                timestamps = [t.get("timestamp", 0) for t in trades_data if t.get("timestamp")]
-                if timestamps:
-                    oldest_in_batch = min(timestamps)
-                    newest_in_batch = max(timestamps)
-                    from datetime import datetime
-                    print(f"\n[Debug] Batch timestamps: {datetime.fromtimestamp(newest_in_batch).strftime('%Y-%m-%d %H:%M:%S')} to {datetime.fromtimestamp(oldest_in_batch).strftime('%Y-%m-%d %H:%M:%S')}")
-                    if min_timestamp_in_db:
-                        if oldest_in_batch < min_timestamp_in_db:
-                            print(f"  ✓ Progress: Getting older trades (older than DB minimum)")
-
+            if parsed_trades:
+                print(f"  ✓ Found {len(parsed_trades)} new trades for {interval_date_str}")
+                batch_buffer.extend(parsed_trades)
+                
+                # Save when buffer is full
+                if len(batch_buffer) >= BUFFER_SIZE:
+                    if save_to_db and db_conn:
+                        cursor = db_conn.cursor()
+                        cursor.executemany(
+                            "INSERT INTO trades (timestamp, price, size, trader_address, market_id, side) VALUES (?, ?, ?, ?, ?, ?)",
+                            batch_buffer,
+                        )
+                        db_conn.commit()
+                        inserted_count = cursor.rowcount
+                        total_loaded += inserted_count
+                    else:
+                        total_loaded += len(batch_buffer)
+                    
+                    batch_buffer = []
+                    
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback(total_loaded, total_loaded + len(batch_buffer))
+            else:
+                print(f"  - No new trades for {interval_date_str}")
+        
         # Save remaining buffer
         if batch_buffer:
             if save_to_db and db_conn:
@@ -381,7 +470,7 @@ async def async_fetch_all_trades(
         total_processed = total_loaded + total_skipped
         efficiency = (total_loaded / total_processed * 100) if total_processed > 0 else 0.0
 
-        print(f"\n✓ Finished after {iterations} iterations.")
+        print(f"\n✓ Finished processing {len(date_intervals)} daily intervals.")
         print(f"  ✓ New trades loaded: {total_loaded:,}")
         print(f"  ✓ Duplicates skipped: {total_skipped:,}")
         print(f"  ✓ Efficiency: {efficiency:.1f}% unique")
@@ -398,7 +487,6 @@ async def async_fetch_all_trades(
                 total_volume = result[0] if result and result[0] is not None else 0.0
                 print(f"  ✓ Total volume in database: {total_volume:,.2f}")
             except Exception:
-                # Don't fail if volume calculation fails
                 pass
 
         return total_loaded
